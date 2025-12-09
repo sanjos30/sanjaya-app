@@ -1,0 +1,6 @@
+# Example autopilot.yaml for example-project
+# This is a stub configuration file
+# See configs/examples/autopilot-example.yaml for a complete example
+
+project_name: "example-project"
+

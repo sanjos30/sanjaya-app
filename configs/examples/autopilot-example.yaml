@@ -1,0 +1,84 @@
+# Example autopilot.yaml for a demo project
+# This file should be placed in .sanjaya/autopilot.yaml in your project
+
+project_name: "demo-api"
+description: "Example FastAPI project using Sanjaya Autopilot"
+
+# Technology stack definition
+stack:
+  language: "python"
+  version: "3.11"
+  framework: "fastapi"
+  framework_version: "0.104.0"
+  
+  # Additional dependencies
+  dependencies:
+    - "pydantic>=2.0"
+    - "uvicorn>=0.24.0"
+    
+  # Testing framework
+  testing:
+    framework: "pytest"
+    version: "7.4.0"
+
+# Safety rules and guardrails
+safety_rules:
+  max_file_changes: 10
+  max_lines_per_file: 500
+  
+  allowed_directories:
+    - "src/"
+    - "tests/"
+    - "api/"
+    
+  forbidden_patterns:
+    - "eval("
+    - "exec("
+    - "__import__"
+    
+  # Risk thresholds
+  risk_threshold: "medium"  # low, medium, high
+
+# Workflow configuration
+workflows:
+  enabled:
+    - "feature"
+    - "bugfix"
+    
+  feature:
+    require_design_contract: true
+    auto_create_pr: true
+    
+  bugfix:
+    require_regression_test: true
+    max_patch_size: 200  # lines
+
+# Integrations
+integrations:
+  github:
+    repo: "owner/demo-api"
+    default_branch: "main"
+    pr_labels:
+      - "autopilot"
+      - "generated"
+      
+  logs:
+    source: "file"
+    path: "logs/app.log"
+    level: "ERROR"
+
+# Code conventions
+conventions:
+  style_guide: "pep8"
+  line_length: 100
+  docstring_format: "google"
+  
+# Governance
+governance:
+  require_approval: true
+  min_reviewers: 1
+  blocking_checks:
+    - "tests_pass"
+    - "lint_passes"
+    - "safety_validated"
+

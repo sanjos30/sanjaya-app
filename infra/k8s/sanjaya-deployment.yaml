@@ -1,0 +1,39 @@
+# Kubernetes Deployment for Sanjaya Autopilot
+# This is a stub file with placeholder structure
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sanjaya-autopilot
+  namespace: default
+  labels:
+    app: sanjaya-autopilot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sanjaya-autopilot
+  template:
+    metadata:
+      labels:
+        app: sanjaya-autopilot
+    spec:
+      containers:
+      - name: sanjaya-autopilot
+        image: sanjaya-autopilot:latest  # TODO: Update with actual image
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: SANJAYA_ENV
+          value: "production"
+        - name: SANJAYA_LOG_LEVEL
+          value: "INFO"
+        # TODO: Add additional environment variables
+        # TODO: Add resource limits and requests
+        # TODO: Add health checks
+        # TODO: Add volume mounts if needed
+      # TODO: Add init containers if needed
+      # TODO: Add service account
+      # TODO: Add security context
+

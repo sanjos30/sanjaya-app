@@ -1,0 +1,22 @@
+# Kubernetes Service for Sanjaya Autopilot
+# This is a stub file with placeholder structure
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: sanjaya-autopilot
+  namespace: default
+  labels:
+    app: sanjaya-autopilot
+spec:
+  type: ClusterIP  # TODO: Consider LoadBalancer or NodePort for external access
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: sanjaya-autopilot
+  # TODO: Add session affinity if needed
+  # TODO: Add external IPs if needed
+

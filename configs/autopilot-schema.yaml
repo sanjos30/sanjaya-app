@@ -1,0 +1,74 @@
+# Schema definition for autopilot.yaml
+# This describes the structure and validation rules for project autopilot.yaml files
+
+schema:
+  version: "1.0"
+  
+  required_fields:
+    - project_name
+    - stack
+    
+  fields:
+    project_name:
+      type: string
+      description: "Name of the project"
+      
+    stack:
+      type: object
+      description: "Technology stack definition"
+      required_fields:
+        - language
+        - framework
+      fields:
+        language:
+          type: string
+          description: "Primary programming language"
+          examples: ["python", "javascript", "go", "rust"]
+        framework:
+          type: string
+          description: "Primary framework"
+          examples: ["fastapi", "express", "gin", "actix"]
+        version:
+          type: string
+          description: "Version of the stack"
+          
+    safety_rules:
+      type: object
+      description: "Safety rules and guardrails"
+      fields:
+        max_file_changes:
+          type: integer
+          description: "Maximum number of files that can be changed in a single PR"
+        allowed_directories:
+          type: array
+          description: "List of directories where changes are allowed"
+        forbidden_patterns:
+          type: array
+          description: "Patterns that are not allowed in generated code"
+          
+    workflows:
+      type: object
+      description: "Workflow configuration"
+      fields:
+        enabled:
+          type: array
+          description: "List of enabled workflows"
+          examples: ["feature", "bugfix"]
+        feature:
+          type: object
+          description: "Feature workflow settings"
+        bugfix:
+          type: object
+          description: "Bugfix workflow settings"
+          
+    integrations:
+      type: object
+      description: "External service integrations"
+      fields:
+        github:
+          type: object
+          description: "GitHub integration settings"
+        logs:
+          type: object
+          description: "Log aggregation service settings"
+

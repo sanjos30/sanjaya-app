@@ -1,0 +1,6 @@
+# Minimal requirements for Sanjaya Autopilot Platform
+# For local development
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
