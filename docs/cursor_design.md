@@ -1,7 +1,7 @@
 # Sanjaya Autopilot — Implementation Design Document
 
 **Last Updated**: December 2024  
-**Version**: v0.2 (Step 2 Implementation)
+**Version**: v0.4 (LLM-Powered ProductAgent)
 
 This document tracks the current implementation state of the Sanjaya Autopilot platform, including what has been built, how it works, and what remains to be implemented.
 
@@ -38,38 +38,91 @@ Sanjaya Autopilot is a **multi-agent, multi-project, stack-agnostic SDLC and ope
 
 ## Current Implementation Status
 
-### ✅ Implemented (v0.2)
+### ✅ Implemented (v0.3)
 
 1. **API Service** (`autopilot_core/main_service/api.py`)
    - FastAPI service with multiple endpoints
    - Request/Response models using Pydantic
    - Error handling with HTTPException
+   - Project registration endpoint
 
 2. **OrchestratorAgent** (`agents/orchestrator/orchestrator_agent.py`)
-   - Loads project configurations
+   - Loads project configurations (GitHub repos or local paths)
    - Validates design contract files
-   - Returns structured workflow plans
+   - Runs codegen/tests/PR flow when requested (flags on `/workflows/run`)
    - Generates workflow IDs
+   - Works with both remote and local projects
 
-3. **ProductAgent v0** (`agents/product/product_agent.py`)
-   - Creates feature design contracts from structured input
+3. **ProductAgent** (`agents/product/product_agent.py`)
+   - Creates feature design contracts from structured input (v0)
+   - **NEW**: LLM-powered feature contract generation from simple ideas
    - Slugifies feature names for filesystem safety
-   - Writes markdown files with standard template
+   - Writes markdown files with comprehensive template
+   - Works with GitHub repos and local paths
+   - Supports OpenAI and Anthropic LLM providers
 
-4. **ConfigLoader** (`autopilot_core/config/loader.py`)
+4. **CodegenAgent** (`agents/codegen/codegen_agent.py`)
+   - Parses design contracts (lightweight markdown parsing)
+   - LLM-driven for all stacks (Python/FastAPI, Node/Next.js, PHP, etc.)
+   - Stack-aware file naming (API routes/handlers/tests)
+   - Prompts include stack/runtime/dirs from `autopilot.yaml`
+   - Writes deterministic scaffolds for known stacks when files are missing:
+     - FastAPI: `app/main.py` (with `/health` endpoint), `app/api/routes.py`, `app/core/config.py`, `app/core/db.py`, `requirements.txt`, `.env.example`, `tests/test_health.py`
+     - Next.js: `package.json`, `next.config.mjs`, `tsconfig.json`, `app/page.tsx`, `app/api/health/route.ts` (or `pages/api/health.ts`), `.env.local.example`, sample frontend test
+     - PHP: `public/index.php` (with `/health` handler), `src/config.php`, `src/db/mysql.php`, `src/db/mongo.php`, `composer.json`, `.env.example`, `tests/phpunit.xml`, `tests/HealthTest.php`
+   - Writes code + tests via RepoClient
+   - Respects dry-run (skips generation)
+
+5. **BugfixAgent** (`agents/bugfix/bugfix_agent.py`) - NEW
+   - LLM-powered bugfix suggestions for test failures
+   - Analyzes test output (stdout, stderr, exit code)
+   - Generates unified diff patches
+   - Provides retry commands and explanatory notes
+   - Called automatically by Orchestrator when tests fail and `run_bugfix=true`
+   - Patches are returned in workflow response (not auto-applied)
+
+6. **GovernanceAgent** (`agents/governance/governance_agent.py`) - NEW
+   - Rule-based policy enforcement
+   - Checks forbidden paths (e.g., `.env`, secrets)
+   - Requires tests for code changes (configurable)
+   - Validates allowed dependencies (if configured)
+   - Evaluates diffs before PR creation
+   - Returns violations (errors/warnings) but does not block PRs in MVP
+
+7. **ConfigLoader** (`autopilot_core/config/loader.py`)
    - Loads per-project `autopilot.yaml` configurations
+   - Supports GitHub repos (clones and caches)
+   - Supports local paths (for development/testing)
    - YAML parsing with error handling
 
-### ⏳ Stubbed (Not Yet Implemented)
+8. **ProjectRegistry** (`autopilot_core/config/project_registry.py`) - NEW
+   - Tracks registered projects
+   - Stores repo URLs and metadata
+   - JSON-based persistence
 
-1. **CodegenAgent** - Code generation from design contracts
-2. **BugfixAgent** - Bugfix patch generation
-3. **MonitorAgent** - Log monitoring and issue detection
-4. **GovernanceAgent** - Safety rule enforcement
-5. **MarketingAgent** - Marketing content generation
-6. **Full Workflow Execution** - Currently only validates inputs
-7. **Pull Request Creation** - PR generation not implemented
-8. **Test Execution** - Test running not implemented
+9. **RepoClient** (`autopilot_core/clients/repo_client.py`) - NEW
+   - Clone GitHub repositories
+   - Create branches
+   - Commit changes
+   - Push branches
+   - Read/write files in repos
+   - Get unified diffs (`get_diff()`)
+   - Git operations via GitPython
+   - Create GitHub PRs (real if token/repo provided, stub otherwise)
+
+10. **LLMClient** (`autopilot_core/clients/llm_client.py`) - NEW
+   - Generic LLM client supporting multiple providers
+   - OpenAI (GPT-4, GPT-3.5) support
+   - Anthropic (Claude) support
+   - Configurable via environment variables
+   - Chat and generate interfaces
+
+### ⏳ Stubbed / Partial
+
+1. **MonitorAgent** - Log monitoring and issue detection
+2. **MarketingAgent** - Marketing content generation
+3. **Pull Request Creation** - Implemented with GitHub API when token/repo info + push_branch=true; falls back to stub on failure/missing token
+4. **Test Execution** - Basic command execution (pytest/npm test/phpunit) but no stack-aware orchestration beyond that
 
 ---
 
@@ -99,9 +152,43 @@ http://localhost:8000
 #### 2. `GET /projects`
 **Purpose**: List all registered projects
 
-**Response**: TBD (currently returns `pass`)
+**Response Model**: `List[ProjectInfo]`
+```json
+[
+  {
+    "project_id": "lemonade-stand-app",
+    "repo_url": "https://github.com/user/lemonade-stand-app.git",
+    "metadata": {}
+  }
+]
+```
 
-**Status**: ⏳ Stubbed
+**Status**: ✅ Implemented
+
+---
+
+#### 2b. `POST /projects/register`
+**Purpose**: Register a new project with Sanjaya
+
+**Request Model**: `ProjectRegisterRequest`
+```json
+{
+  "project_id": "lemonade-stand-app",
+  "repo_url": "https://github.com/user/lemonade-stand-app.git",
+  "metadata": {}
+}
+```
+
+**Response Model**: `ProjectRegisterResponse`
+```json
+{
+  "project_id": "lemonade-stand-app",
+  "repo_url": "https://github.com/user/lemonade-stand-app.git",
+  "message": "Project 'lemonade-stand-app' registered successfully."
+}
+```
+
+**Status**: ✅ Implemented
 
 ---
 
@@ -111,35 +198,51 @@ http://localhost:8000
 **Request Model**: `WorkflowRunRequest`
 ```json
 {
-  "workflow_type": "feature_from_contract",
+  "workflow_type": "feature",  # "feature" or "bugfix"
   "project_id": "example-project",
-  "contract_path": "design-contracts/lemonade-stand-planner.md",
-  "dry_run": true
+  "contract_path": "design-contracts/lemonade-stand-planner.md",  # Required for FEATURE, optional for BUGFIX
+  "dry_run": true,
+  "run_codegen": false,
+  "run_tests": false,
+  "run_smoke": false,
+  "run_bugfix": false,
+  "create_pr": false
 }
 ```
+
+**Workflow Types**:
+- `"feature"`: Full feature workflow (requires `contract_path`). Runs ProductAgent → CodegenAgent → Tests → Smoke → Governance → PR
+- `"bugfix"`: Bugfix-only workflow (no `contract_path` needed). Runs Tests → BugfixAgent suggestions (if tests fail and `run_bugfix=true`). Skips ProductAgent and CodegenAgent.
 
 **Response Model**: `WorkflowRunResponse`
 ```json
 {
   "workflow_id": "wf-example-project-2024-12-08T18:30:00",
-  "status": "accepted",
-  "message": "Feature workflow validated (stub)",
+  "status": "accepted",  # Legacy status
+  "message": "Feature workflow executed",
+  "workflow_status": "success",  # New detailed status: "success", "failed_tests", "failed_smoke", "failed_governance", "error"
+  "tests_passed": true,
+  "smoke_passed": true,
+  "governance_ok": true,
   "details": {
     "project_id": "example-project",
     "autopilot_config": {...},
     "design_contract": "design-contracts/lemonade-stand-planner.md",
-    "dry_run": true,
-    "workflow_steps": [...]
+    "dry_run": false,
+    "workflow_steps": [...],
+    "test_result": {...},
+    "smoke_result": {...},
+    "governance": {...}
   }
 }
 ```
 
-**Status**: ✅ Partially Implemented (validation only, execution stubbed)
+**Status**: ✅ Implemented (with status gating)
 
 ---
 
 #### 4. `POST /ideas/feature`
-**Purpose**: Create a feature design contract from a feature idea
+**Purpose**: Create a feature design contract from structured feature idea
 
 **Request Model**: `FeatureIdeaRequest`
 ```json
@@ -163,6 +266,68 @@ http://localhost:8000
 ```
 
 **Status**: ✅ Fully Implemented
+
+---
+
+#### 4b. `POST /ideas/feature-from-idea` - NEW
+**Purpose**: Create a comprehensive feature design contract from a simple idea using LLM
+
+**Request Model**: `FeatureIdeaSimpleRequest`
+```json
+{
+  "project_id": "example-project",
+  "idea": "I want to add a feature that calculates profit margins for products",
+  "context": {
+    "priority": "high",
+    "deadline": "2024-12-31"
+  }
+}
+```
+
+**Response Model**: `FeatureIdeaResponse`
+```json
+{
+  "project_id": "example-project",
+  "contract_path": "design-contracts/profit-margin-calculator.md",
+  "message": "Feature design contract generated using LLM."
+}
+```
+
+**Status**: ✅ Fully Implemented (LLM-powered)
+
+---
+
+#### 5. `POST /monitor/check`
+**Purpose**: Analyze log files for issues (on-demand monitoring)
+
+**Request Model**: `MonitorCheckRequest`
+```json
+{
+  "log_paths": ["logs/app.log", "/var/log/app/error.log"],
+  "max_lines": 2000
+}
+```
+
+**Response Model**: `MonitorCheckResponse`
+```json
+{
+  "issues": [
+    {
+      "severity": "error",
+      "code": "ERROR_LINE",
+      "message": "Detected ERROR_LINE pattern in log",
+      "line": "2024-12-08 10:00:00 ERROR: Database connection failed",
+      "line_number": 42,
+      "file_path": "/path/to/logs/app.log"
+    }
+  ],
+  "summary": "Found 1 issue(s): 1 error(s), 0 warning(s), 0 info"
+}
+```
+
+**Status**: ✅ Implemented (MVP - rule-based detection)
+
+**Note**: This is on-demand only. It does NOT automatically trigger workflows. For continuous monitoring, trigger this endpoint externally (cron, GitHub Actions, etc.).
 
 ---
 
@@ -195,9 +360,11 @@ http://localhost:8000
 **Location**: `agents/product/product_agent.py`
 
 **Responsibilities**:
-- Creates feature design contracts from structured input
+- Creates feature design contracts from structured input (v0)
+- **NEW**: Generates comprehensive design contracts from simple ideas using LLM
 - Slugifies feature names for filesystem safety
-- Writes markdown files with standard template
+- Writes markdown files with comprehensive template
+- Clarifies requirements through LLM dialogue
 
 **Key Methods**:
 
@@ -215,17 +382,144 @@ http://localhost:8000
   8. Notes
 - Returns: `{"project_id": str, "contract_path": str}`
 
+#### `create_feature_contract_from_idea(project_id, idea, context=None)` - NEW
+- Takes a simple feature idea string
+- Uses LLM to generate comprehensive design contract
+- Includes all sections: API Design, Data Model, Logging & Monitoring, Tests, Security, etc.
+- Loads project config for context (tech stack, conventions)
+- Generates markdown following `feature_design_template.md` structure
+- Returns: `{"project_id": str, "contract_path": str}`
+- **Requires**: LLM client (OpenAI or Anthropic API key)
+
+#### `clarify_requirements(idea, context=None)` - NEW
+- Uses LLM to generate clarifying questions about a feature idea
+- Helps refine requirements before design contract creation
+- Returns: `{"original_idea": str, "clarifying_questions": str, "context": dict}`
+
 #### `_slugify(text: str) -> str`
 - Converts text to filesystem-safe slug
 - Lowercase, hyphens instead of spaces
 - Removes special characters
 - Example: `"Lemonade Stand Planner"` → `"lemonade-stand-planner"`
 
-**Status**: ✅ Fully Implemented (v0)
+**LLM Integration**:
+- Supports OpenAI (GPT-4, GPT-3.5) and Anthropic (Claude)
+- Configured via `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` environment variables
+- Uses system prompts to guide LLM output format
+- Generates production-ready design contracts
+
+**Status**: ✅ Fully Implemented (v0 + LLM-powered)
 
 ---
 
-### 3. ConfigLoader
+### 3. BugfixAgent
+
+**Location**: `agents/bugfix/bugfix_agent.py`
+
+**Responsibilities**:
+- Analyzes test failures and suggests fixes
+- Generates unified diff patches
+- Provides retry commands and explanatory notes
+- LLM-powered analysis of test output
+
+**Key Methods**:
+
+#### `suggest_fixes(request: BugfixRequest) -> BugfixResponse`
+- Takes test failure details (command, exit code, stdout, stderr)
+- Uses LLM to analyze root cause
+- Generates unified diff patches for affected files
+- Returns patches, retry command, and notes
+- **Requires**: LLM client (OpenAI or Anthropic API key)
+
+**Data Models**:
+- `BugfixRequest`: Command, exit code, stdout, stderr, changed files, project config
+- `BugfixResponse`: Patches (list), retry command, notes, success flag
+- `Patch`: File path, unified diff, notes
+
+**Integration**:
+- Called automatically by Orchestrator when tests fail and `run_bugfix=true`
+- Patches are returned in workflow response (not auto-applied)
+- Human review required before applying fixes
+
+**Status**: ✅ Implemented (LLM-powered)
+
+---
+
+### 4a. Bugfix Workflow
+
+**Location**: `agents/orchestrator/orchestrator_agent.py` → `run_bugfix_workflow()`
+
+**Responsibilities**:
+- Runs bugfix-only workflow (no ProductAgent or CodegenAgent)
+- Executes tests on current codebase
+- Suggests patches via BugfixAgent if tests fail (when `run_bugfix=true`)
+- Does NOT auto-apply patches (HITL)
+
+**Key Methods**:
+
+#### `run_bugfix_workflow(project_id, run_tests=True, run_bugfix=False)`
+- Skips ProductAgent and CodegenAgent
+- Runs test command from `runtime.*.test_command` (or stack defaults)
+- If tests fail and `run_bugfix=true`:
+  - Calls `BugfixAgent.suggest_fixes()` with test failure details
+  - Returns patches in response (not applied)
+  - Workflow status remains `FAILED_TESTS` (patches are suggestions only)
+- Returns workflow result with `workflow_status`, `tests_passed`, and `bugfix_result`
+
+**Usage**:
+```json
+POST /workflows/run
+{
+  "workflow_type": "bugfix",
+  "project_id": "example-project",
+  "run_tests": true,
+  "run_bugfix": true
+}
+```
+
+**Status**: ✅ Implemented
+
+---
+
+### 4. GovernanceAgent
+
+**Location**: `agents/governance/governance_agent.py`
+
+**Responsibilities**:
+- Enforces safety rules and compliance policies
+- Checks forbidden paths (secrets, credentials)
+- Validates test coverage requirements
+- Checks allowed dependencies
+
+**Key Methods**:
+
+#### `evaluate(diff: str, project_config: Dict[str, Any]) -> GovernanceResult`
+- Analyzes unified diff for policy violations
+- Checks forbidden paths (e.g., `.env`, `**/secrets/**`)
+- Requires tests for code changes (if configured)
+- Validates dependencies against allowed list (if configured)
+- Returns violations (errors/warnings)
+- When governance fails, workflow status is set to `FAILED_GOVERNANCE`
+
+**Data Models**:
+- `GovernanceRuleViolation`: Rule name, severity, message, file path
+- `GovernanceResult`: OK flag, violations list, summary
+
+**Rules**:
+1. **Forbidden Paths**: Blocks changes to `.env`, secrets, credentials
+2. **Require Tests**: Warns if code changes lack test files
+3. **Allowed Dependencies**: Validates new dependencies against whitelist (if configured)
+
+**Integration**:
+- Called automatically by Orchestrator before PR creation
+- Violations are surfaced in workflow response
+- Does not block PR creation in MVP (informational only)
+
+**Status**: ✅ Implemented (rule-based)
+
+---
+
+### 5. ConfigLoader
 
 **Location**: `autopilot_core/config/loader.py`
 
@@ -245,11 +539,39 @@ http://localhost:8000
 
 ---
 
+### 6. CodegenAgent
+
+**Location**: `agents/codegen/codegen_agent.py`
+
+**Responsibilities**:
+- Generates code and tests from design contracts
+- LLM-driven for all stacks
+- Creates deterministic scaffolds for known stacks
+- Stack-aware file naming and structure
+
+**Key Methods**:
+
+#### `generate_artifacts(project_id, repo_path, contract_path, project_config)`
+- Parses design contract markdown
+- Ensures scaffold exists (creates if missing)
+- Generates feature-specific code via LLM
+- Generates tests via LLM
+- Writes files to repository
+
+**Scaffolds**:
+- FastAPI: Includes `/health` endpoint in `app/main.py`
+- Next.js: Includes `/api/health` route (App Router or Pages Router)
+- PHP: Includes `/health` handler in `public/index.php`
+
+**Status**: ✅ Fully Implemented (LLM-powered + scaffolds)
+
+---
+
 ## File Structure & Conventions
 
 ### Project Structure
 ```
-sanjaya-app/
+sanjaya-app/                     # Platform repository
 ├── autopilot_core/              # Core platform code
 │   ├── __init__.py
 │   ├── main_service/
@@ -257,7 +579,14 @@ sanjaya-app/
 │   │   └── api.py              # FastAPI service
 │   ├── config/
 │   │   ├── __init__.py
-│   │   └── loader.py           # Config loader
+│   │   ├── loader.py           # Config loader (GitHub + local)
+│   │   └── project_registry.py # Project registry (NEW)
+│   ├── clients/
+│   │   ├── __init__.py
+│   │   ├── repo_client.py      # Git operations (implemented)
+│   │   ├── llm_client.py        # LLM client (NEW - implemented)
+│   │   ├── github_client.py    # GitHub API (stubbed)
+│   │   └── ...
 │   └── workflows/               # Workflow definitions (stubbed)
 ├── agents/                      # Agent implementations
 │   ├── __init__.py
@@ -266,18 +595,33 @@ sanjaya-app/
 │   │   └── orchestrator_agent.py
 │   ├── product/
 │   │   ├── __init__.py
-│   │   └── product_agent.py
+│   │   ├── product_agent.py
+│   │   └── prompts.py           # LLM prompt templates
+│   ├── codegen/
+│   │   ├── __init__.py
+│   │   ├── codegen_agent.py
+│   │   └── prompts.py           # Codegen prompts
+│   ├── bugfix/
+│   │   ├── __init__.py
+│   │   ├── bugfix_agent.py      # NEW - Bugfix suggestions
+│   │   └── prompts.py           # Bugfix prompts
+│   ├── governance/
+│   │   ├── __init__.py
+│   │   ├── governance_agent.py  # NEW - Policy enforcement
+│   │   └── prompts.py           # Governance rules
 │   └── [other agents - stubbed]
 ├── configs/
 │   ├── global-settings.yaml
 │   ├── autopilot-schema.yaml
-│   └── examples/
-│       ├── autopilot-example.yaml
+│   └── examples/                # For local testing only
 │       └── example-project/
 │           └── .sanjaya/
-│               ├── autopilot.yaml
-│               └── design-contracts/
-│                   └── [feature contracts]
+│               └── ...
+├── .cache/                      # Cached cloned repos (NEW)
+│   └── projects/
+│       └── [project_id]/
+├── .sanjaya/                    # Platform config (NEW)
+│   └── project_registry.json    # Registered projects
 ├── docs/                        # Documentation
 │   ├── sanjaya-spec-master.md
 │   ├── AGENTS.md
@@ -288,6 +632,19 @@ sanjaya-app/
     ├── dev-start.sh
     ├── run-tests.sh
     └── sync-project.sh
+```
+
+### Separate Project Repositories
+
+Each project is a **separate GitHub repository** with this structure:
+```
+project-repo/
+├── README.md
+├── .sanjaya/                    # Sanjaya configuration
+│   ├── autopilot.yaml          # Project config
+│   └── design-contracts/       # Feature design contracts
+│       └── [feature].md
+└── [project code]
 ```
 
 ### Project Configuration Structure
@@ -313,15 +670,22 @@ Each project under `configs/examples/{project_id}/` must have:
    Example: `design-contracts/lemonade-stand-planner.md`
 
 2. **Full Path Construction**:
-   ```
-   configs/examples/{project_id}/.sanjaya/{contract_path}
-   ```
-   Example: `configs/examples/example-project/.sanjaya/design-contracts/lemonade-stand-planner.md`
+   - **For GitHub repos**: `.cache/projects/{project_id}/.sanjaya/{contract_path}`
+   - **For local projects**: `configs/examples/{project_id}/.sanjaya/{contract_path}`
+   
+   Example: `.cache/projects/lemonade-stand-app/.sanjaya/design-contracts/lemonade-stand-planner.md`
 
 3. **Config Path**:
-   ```
-   configs/examples/{project_id}/.sanjaya/autopilot.yaml
-   ```
+   - **For GitHub repos**: `.cache/projects/{project_id}/.sanjaya/autopilot.yaml`
+   - **For local projects**: `configs/examples/{project_id}/.sanjaya/autopilot.yaml`
+
+### Project Registration
+
+Projects must be registered before use:
+1. Register via `POST /projects/register` with repo URL
+2. ConfigLoader clones repo to `.cache/projects/{project_id}/`
+3. Agents access project via cached clone
+4. Changes are written to cached clone (PR creation coming soon)
 
 ### Path Consistency
 
@@ -329,6 +693,43 @@ Each project under `configs/examples/{project_id}/` must have:
 - **OrchestratorAgent** expects `contract_path` relative to `.sanjaya/`
 - Both agents construct full paths using the same pattern
 - This ensures compatibility between agents
+
+### Stack & Runtime Configuration (`autopilot.yaml`)
+
+Example fields the agents consume:
+```
+codebase:
+  root: "."
+  backend_dir: "backend"
+  frontend_dir: "frontend"
+  tests_dir: "tests"
+
+stack:
+  backend: "fastapi"     # or "nextjs" / "node" / "php"
+  frontend: "nextjs"     # optional
+  database: "mysql"      # or "mongodb" / "none"
+
+runtime:
+  backend_fastapi:
+    dev_command: "cd backend && uvicorn app.main:app --reload --port 8000"
+    test_command: "pytest -q"
+  frontend_next:
+    dev_command: "cd frontend && npm run dev"
+    test_command: "cd frontend && npm test"
+  backend_php:
+    dev_command: "php -S localhost:8000 -t backend-php/public"
+    test_command: "cd backend-php && ./vendor/bin/phpunit"
+
+database:
+  driver: "mysql"        # or "mongodb"
+  env_prefix: "DB_"
+  mongo_env_uri: "MONGO_URI"
+```
+
+CodegenAgent uses these fields to:
+- Choose scaffold and file destinations (backend_dir, frontend_dir, tests_dir)
+- Populate prompts with stack/runtime context
+- Run default test commands if not overridden
 
 ---
 
@@ -364,10 +765,37 @@ Each project under `configs/examples/{project_id}/` must have:
 ```python
 {
   "workflow_id": str,          # e.g., "wf-example-project-2024-12-08T18:30:00"
-  "status": Literal["accepted", "rejected", "error"],
+  "status": Literal["accepted", "rejected", "error"],  # Legacy status (backward compat)
   "message": str,
-  "details": Dict[str, Any]    # Workflow details
+  "details": Dict[str, Any],   # Workflow details
+  "workflow_status": Optional[WorkflowStatus],  # New detailed status
+  "tests_passed": Optional[bool],
+  "smoke_passed": Optional[bool],
+  "governance_ok": Optional[bool]
 }
+```
+
+#### `WorkflowStatus` (Enum)
+```python
+class WorkflowStatus(str, Enum):
+    SUCCESS = "success"
+    FAILED_TESTS = "failed_tests"
+    FAILED_SMOKE = "failed_smoke"
+    FAILED_GOVERNANCE = "failed_governance"
+    ERROR = "error"
+```
+
+**Status Computation**:
+- If tests failed → `FAILED_TESTS`
+- Else if smoke failed (when `run_smoke=true`) → `FAILED_SMOKE`
+- Else if governance failed (when `create_pr=true`) → `FAILED_GOVERNANCE`
+- Otherwise → `SUCCESS`
+
+#### `WorkflowType` (Enum)
+```python
+class WorkflowType(str, Enum):
+    FEATURE = "feature"  # Full feature workflow (ProductAgent → CodegenAgent → Tests → PR)
+    BUGFIX = "bugfix"    # Bugfix-only workflow (Tests → BugfixAgent suggestions)
 ```
 
 #### `FeatureIdeaResponse`
@@ -386,23 +814,27 @@ Each project under `configs/examples/{project_id}/` must have:
 ### Feature Development Workflow (Current State)
 
 ```
-1. POST /ideas/feature
+1. POST /projects/register (if not already registered)
+   - Register project with GitHub repo URL
    ↓
-2. ProductAgent.create_feature_contract()
+2. POST /ideas/feature
+   ↓
+3. ProductAgent.create_feature_contract()
+   - Gets repo path (GitHub cache or local)
    - Slugifies feature name
-   - Creates design-contracts directory
-   - Writes markdown file
+   - Creates design-contracts directory in repo
+   - Writes markdown file to repo
    - Returns contract_path
    ↓
-3. POST /workflows/run
+4. POST /workflows/run
    ↓
-4. OrchestratorAgent.run_feature_workflow()
+5. OrchestratorAgent.run_feature_workflow()
    - Generates workflow ID
-   - Loads project config (ConfigLoader)
-   - Validates contract file exists
-   - Returns workflow plan (stub)
-   ↓
-5. [STUBBED] CodegenAgent.generate_code()
+   - Loads project config (ConfigLoader - from GitHub or local)
+   - Validates contract file exists in repo
+   - If `dry_run=true`: stops after validation
+   - If `dry_run=false`: invokes CodegenAgent to generate stub code + tests into repo
+   - Returns workflow result + generated file paths
    ↓
 6. [STUBBED] Test execution
    ↓
@@ -413,8 +845,7 @@ Each project under `configs/examples/{project_id}/` must have:
 
 ### Current Limitations
 
-- Workflow execution stops after validation
-- Code generation not implemented
+- Code generation is stub/LLM-assisted; no project-specific frameworks yet
 - PR creation not implemented
 - Test execution not implemented
 
@@ -450,8 +881,10 @@ Each project under `configs/examples/{project_id}/` must have:
 
 1. **Workflow Execution**
    - Validates inputs correctly
-   - Returns structured responses
-   - Does not execute actual workflow steps
+   - Runs LLM-driven codegen when `dry_run=false` and `run_codegen=true`
+   - Returns generated file paths
+   - Test execution is command-based (per stack defaults)
+   - PR prep: branch/commit + PR stub; real PR if token/repo info + push_branch enabled
 
 ---
 
@@ -459,18 +892,12 @@ Each project under `configs/examples/{project_id}/` must have:
 
 ### Agents (Stub Status)
 
-1. **CodegenAgent** - Stub only
-2. **BugfixAgent** - Stub only
-3. **MonitorAgent** - Stub only
-4. **GovernanceAgent** - Stub only
-5. **MarketingAgent** - Stub only
+1. **MarketingAgent** - Stub only (not implemented yet)
 
 ### Workflow Steps (Stubbed)
 
-1. Code generation from design contracts
-2. Test execution
-3. Pull request creation
-4. Actual workflow orchestration
+1. Pull request creation (stub metadata)
+2. Actual workflow orchestration
 
 ### Endpoints (Stubbed)
 
@@ -480,7 +907,7 @@ Each project under `configs/examples/{project_id}/` must have:
 
 ## Usage Examples
 
-### Example 1: Create a Feature Design Contract
+### Example 1: Create a Feature Design Contract (Structured Input)
 
 **Request**:
 ```bash
@@ -512,7 +939,45 @@ configs/examples/example-project/.sanjaya/design-contracts/lemonade-stand-planne
 
 ---
 
-### Example 2: Run a Feature Workflow
+### Example 1b: Create a Feature Design Contract from Simple Idea (LLM-Powered) - NEW
+
+**Request**:
+```bash
+curl -X POST "http://localhost:8000/ideas/feature-from-idea" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "example-project",
+    "idea": "I want to add a feature that calculates profit margins for products and shows break-even analysis",
+    "context": {
+      "priority": "high"
+    }
+  }'
+```
+
+**Response**:
+```json
+{
+  "project_id": "example-project",
+  "contract_path": "design-contracts/profit-margin-calculator.md",
+  "message": "Feature design contract generated using LLM."
+}
+```
+
+**Result**: Creates comprehensive design contract with:
+- Full API design (endpoints, request/response schemas)
+- Data models with entities and relationships
+- Logging & monitoring specifications
+- Security requirements
+- Acceptance criteria
+- Test cases (unit, integration, E2E)
+- Implementation notes
+- Dependencies
+
+**Note**: Requires `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` environment variable.
+
+---
+
+### Example 2: Run a Feature Workflow (Validation Only)
 
 **Request**:
 ```bash
@@ -531,7 +996,7 @@ curl -X POST "http://localhost:8000/workflows/run" \
 {
   "workflow_id": "wf-example-project-2024-12-08T18:30:00.123456",
   "status": "accepted",
-  "message": "Feature workflow validated (stub)",
+  "message": "Feature workflow validated (dry_run)",
   "details": {
     "project_id": "example-project",
     "autopilot_config": {
@@ -543,13 +1008,124 @@ curl -X POST "http://localhost:8000/workflows/run" \
       "load_project_config",
       "validate_contract_exists",
       "prepare_codegen_inputs",
-      "invoke_codegen_agent (stub)",
-      "run_tests (stub)",
-      "prepare_pull_request (stub)"
+      "invoke_codegen_agent (skipped, dry_run)",
+      "run_tests (skipped, dry_run)",
+      "prepare_pull_request (skipped, dry_run)"
     ]
   }
 }
 ```
+
+---
+
+### Example 2b: Run Workflow with Codegen (dry_run=false) - NEW
+
+**Request**:
+```bash
+curl -X POST "http://localhost:8000/workflows/run" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "feature_from_contract",
+    "project_id": "example-project",
+    "contract_path": "design-contracts/lemonade-stand-planner.md",
+    "dry_run": false,
+    "run_codegen": true,
+    "run_tests": false,
+    "create_pr": false
+  }'
+```
+
+**Behavior**:
+- Validates project config and contract
+- Invokes CodegenAgent (LLM) to write generated code/tests into the repo
+- Returns generated file paths in `details.generated_files`
+
+**Note**: Requires repo path resolvable (local examples or registered GitHub repo) and LLM keys for all stacks. No deterministic fallback.
+
+---
+
+### Example 2c: Run Workflow with Codegen + Tests + PR (requires token and repo metadata)
+
+**Request**:
+```bash
+curl -X POST "http://localhost:8000/workflows/run" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "feature_from_contract",
+    "project_id": "example-project",
+    "contract_path": "design-contracts/lemonade-stand-planner.md",
+    "dry_run": false,
+    "run_codegen": true,
+    "run_tests": true,
+    "create_pr": true,
+    "push_branch": true,
+    "pr_base": "main",
+    "branch_name": "feature/lemonade-planner",
+    "commit_message": "feat: lemonade planner"
+  }'
+```
+
+**Behavior**:
+- Validates project config and contract
+- Runs codegen (LLM) and writes code/tests to repo
+- Runs tests using `runtime.backend.test_command` (or stack default)
+- Creates branch/commit; if token and repo metadata are present, pushes and creates a GitHub PR; otherwise returns stub PR metadata
+
+**Note**: Requires repo metadata (e.g., `metadata.repo_full_name`) and GitHub token for real PR creation.
+
+---
+
+## Stack Scaffolds (deterministic)
+
+When `run_codegen=true`, CodegenAgent will write missing scaffold files for known stacks before LLM codegen:
+
+- FastAPI (backend_dir, tests_dir):
+  - `app/main.py`, `app/api/routes.py`, `app/core/config.py`, `app/core/db.py`
+  - `requirements.txt`, `.env.example`
+  - `tests/test_health.py`
+
+- Next.js/Node (frontend_dir, tests_dir/frontend):
+  - `package.json`, `next.config.mjs`, `tsconfig.json`
+  - `app/page.tsx`, `.env.local.example`, sample `sample.test.tsx`
+
+- PHP (backend_dir, tests_dir/php):
+  - `public/index.php`
+  - `src/config.php`, `src/db/mysql.php`, `src/db/mongo.php`
+  - `composer.json`, `.env.example`
+  - `tests/phpunit.xml`, `tests/HealthTest.php`
+
+LLM still generates feature-specific code/tests; scaffolds ensure predictable entrypoints and manifests.
+
+### Known requirements
+- Real PR creation: requires repo metadata (`metadata.repo_full_name` or `metadata.github_repo`) and `GITHUB_TOKEN`; otherwise a stub PR is returned.
+- Tests: use `runtime.*.test_command` when provided; fall back to stack defaults (pytest / npm test / phpunit).
+- LLM: required for all stacks; no deterministic fallback for feature code/tests.
+
+### Recommended install/run/smoke commands (per stack)
+
+Define these in `autopilot.yaml` under `runtime` to make installs and smoke checks non-interactive and predictable:
+
+- FastAPI / Python
+  - `runtime.backend_fastapi.install_command`:  
+    `python -m venv backend/.venv && . backend/.venv/bin/activate && pip install --upgrade pip && pip install -r backend/requirements.txt`
+    (Optionally copy `.env.example` -> `.env` first)
+  - `runtime.backend_fastapi.dev_command`: `cd backend && . .venv/bin/activate && uvicorn app.main:app --host 127.0.0.1 --port 8000`
+  - `runtime.backend_fastapi.test_command`: `cd backend && . .venv/bin/activate && pytest -q`
+  - `smoke`: start uvicorn, hit `http://127.0.0.1:8000/health`, then stop
+
+- Next.js / Node
+  - `runtime.frontend_next.install_command`: `cd frontend && (test -f package-lock.json && npm ci || npm install)`
+  - `runtime.frontend_next.dev_command`: `cd frontend && NEXT_TELEMETRY_DISABLED=1 PORT=3000 npm run dev`
+  - `runtime.frontend_next.test_command`: `cd frontend && npm test`
+  - `smoke`: start dev server on port 3000, hit `http://127.0.0.1:3000/api/health`, stop (add `app/api/health/route.ts` or `pages/api/health.ts`)
+
+- PHP (plain)
+  - `runtime.backend_php.install_command`: `cd backend-php && composer install --no-interaction --no-progress --prefer-dist` (copy `.env.example` -> `.env` first)
+  - `runtime.backend_php.dev_command`: `cd backend-php && php -S 127.0.0.1:8000 -t public`
+  - `runtime.backend_php.test_command`: `cd backend-php && ./vendor/bin/phpunit`
+  - `smoke`: start built-in server on 8000, hit `http://127.0.0.1:8000/health`, stop
+
+Note: Orchestrator’s current smoke step is simulated (does not start servers yet); these commands describe the intended behavior for real smoke runs.
 
 ---
 
@@ -566,14 +1142,24 @@ curl -X POST "http://localhost:8000/workflows/run" \
 - **Impact**: Feature names are converted to filesystem-safe slugs
 
 ### 3. Project Structure
-- **Decision**: All example projects under `configs/examples/`
-- **Rationale**: Clear separation between platform code and project configs
-- **Impact**: ConfigLoader assumes this structure
+- **Decision**: Support both GitHub repos (production) and local paths (testing)
+- **Rationale**: Flexibility for development while supporting production use case
+- **Impact**: ConfigLoader checks registry first, falls back to local paths
 
-### 4. Stub-First Approach
-- **Decision**: Implement validation before execution
-- **Rationale**: Allows testing of structure and flow before complex logic
-- **Impact**: Current workflows validate but don't execute
+### 4. LLM-First Codegen
+- **Decision**: Codegen/tests are fully LLM-driven for all stacks
+- **Rationale**: Avoid brittle stubs; rely on prompts informed by `autopilot.yaml`
+- **Impact**: Requires LLM keys; no deterministic fallback
+
+### 5. Stack-Aware Prompts
+- **Decision**: Include stack/runtime/dirs from `autopilot.yaml` in codegen prompts
+- **Rationale**: Guide LLM toward correct file layout and commands
+- **Impact**: More predictable file placement and naming
+
+### 6. PR Flow
+- **Decision**: Allow real PR creation when token + repo metadata are available; otherwise stub
+- **Rationale**: Support end-to-end flow while remaining safe without credentials
+- **Impact**: `push_branch` + repo metadata + token enable real PR; errors fall back to stub metadata
 
 ---
 
@@ -581,28 +1167,78 @@ curl -X POST "http://localhost:8000/workflows/run" \
 
 ### Immediate Priorities
 
-1. **CodegenAgent Implementation**
-   - Read design contracts
-   - Generate code based on project stack
-   - Create test files
+1. Stack scaffolds and manifests
+   - Generate per-stack entrypoints/manifests (FastAPI, Next/Node, PHP) from `autopilot.yaml`
+   - Ensure runnable dev/test commands and dependency files
 
-2. **Workflow Execution**
-   - Connect OrchestratorAgent to CodegenAgent
-   - Implement actual workflow steps
-   - Add error handling
+2. Test/deploy wiring
+   - Stronger stack-aware test orchestration
+   - Add smoke/run hooks (start app, hit health)
 
-3. **Pull Request Creation**
-   - Integrate GitHub client
-   - Create branches
-   - Generate PRs
+3. PR flow hardening
+   - Push + GitHub PR creation with clearer errors/metadata
+
+4. Agents still stubbed
+   - BugfixAgent, MonitorAgent, GovernanceAgent, MarketingAgent
 
 ### Future Enhancements
 
-1. LLM integration for ProductAgent
-2. GovernanceAgent safety checks
-3. MonitorAgent log analysis
-4. BugfixAgent implementation
-5. MarketingAgent content generation
+1. GovernanceAgent safety checks
+2. MonitorAgent log analysis
+3. BugfixAgent implementation
+4. MarketingAgent content generation
+5. Enhanced LLM prompts with project-specific context
+6. Multi-step requirement clarification workflow
+
+---
+
+## Smoke Test Instructions (Codegen Flow)
+
+1) Start API: `./scripts/dev-start.sh` (activate venv if needed).
+2) Ensure project accessible: use local `configs/examples/example-project` or register a real repo.
+3) Create or reuse a design contract (e.g., `design-contracts/lemonade-stand-planner.md`).
+4) Run workflow with codegen:
+```bash
+curl -X POST "http://localhost:8000/workflows/run" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "feature_from_contract",
+    "project_id": "example-project",
+    "contract_path": "design-contracts/lemonade-stand-planner.md",
+    "dry_run": false
+  }'
+```
+5) Verify `details.generated_files` in response.
+6) Inspect generated files in the repo (e.g., `generated/<slug>_feature.py`, `tests/test_<slug>_feature.py`).
+7) LLM keys are required (OpenAI/Anthropic). No stub fallback; call will fail without keys.
+
+---
+
+## Reference: example-project (FastAPI only)
+
+- Health: `backend/app/main.py` exposes `GET /health` → `{"status": "ok"}`.
+- Scaffold present: `backend/app/api/routes.py`, `backend/app/core/config.py`, `backend/app/core/db.py`, `backend/requirements.txt`, `backend/tests/test_health.py`.
+- Smoke scripts used: `scripts/smoke_fastapi.sh` (supports `--install-only`).
+- `autopilot.yaml` (`configs/examples/example-project/.sanjaya/autopilot.yaml`) includes:
+  ```
+  codebase:
+    root: "."
+    backend_dir: "backend"
+    tests_dir: "backend/tests"
+
+  stack:
+    backend: "fastapi"
+    database: "none"
+
+  runtime:
+    backend_fastapi:
+      install_command: "BACKEND_DIR=${BACKEND_DIR:-backend} bash scripts/smoke_fastapi.sh --install-only"
+      smoke_command: "BACKEND_DIR=${BACKEND_DIR:-backend} bash scripts/smoke_fastapi.sh"
+      dev_command: "cd ${BACKEND_DIR:-backend} && . .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      test_command: "cd ${BACKEND_DIR:-backend} && . .venv/bin/activate && pytest -q"
+  ```
+
+Use this as a pattern for other projects/stacks by adjusting dirs and runtime entries.
 
 ---
 
@@ -612,11 +1248,40 @@ curl -X POST "http://localhost:8000/workflows/run" \
 - Python 3.11+ recommended
 - FastAPI and Pydantic required
 - PyYAML required for config loading
-- No LLM integration yet (v0 is template-based)
+- GitPython required for git operations
+- GitHub token (GITHUB_TOKEN env var) needed for private repos
+- **LLM Integration**: OpenAI or Anthropic API key required for LLM-powered features
+  - Set `OPENAI_API_KEY` for OpenAI (default)
+  - Set `ANTHROPIC_API_KEY` for Anthropic
+  - ProductAgent falls back gracefully if LLM not configured
+
+## Architecture Changes
+
+### v0.3: GitHub Repos Support
+- Projects are now separate GitHub repositories
+- Register projects via `POST /projects/register`
+- ConfigLoader clones repos to `.cache/projects/{project_id}/`
+- Local `configs/examples/` still supported for testing
+- RepoClient handles all git operations
+
+### Project Registry
+- New `ProjectRegistry` class tracks registered projects
+- Stores repo URLs and metadata in `.sanjaya/project_registry.json`
+- Enables multi-project management
+
+### v0.4: LLM-Powered ProductAgent
+- **LLMClient**: Generic LLM client supporting OpenAI and Anthropic
+- **ProductAgent Enhancement**: `create_feature_contract_from_idea()` method
+  - Takes simple idea string → generates comprehensive design contract
+  - Includes API design, data models, logging, monitoring, tests, security
+  - Uses project context (tech stack, conventions) in prompts
+- **New API Endpoint**: `POST /ideas/feature-from-idea`
+- **Prompt Templates**: Structured prompts in `agents/product/prompts.py`
+- **Backward Compatible**: Original `create_feature_contract()` still works
 
 ---
 
-**Document Version**: 1.0  
+**Document Version**: 1.1  
 **Last Updated**: December 2024  
 **Maintained By**: Development Team
 
