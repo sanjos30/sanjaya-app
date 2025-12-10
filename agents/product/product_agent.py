@@ -2,6 +2,10 @@
 
 import os
 import re
+import yaml
+import hashlib
+import json
+from pathlib import Path
 from typing import Dict, Optional, Any
 from datetime import datetime
 from autopilot_core.config.loader import ConfigLoader
@@ -42,6 +46,90 @@ class ProductAgent:
                 # If LLM is not configured, we'll still work but LLM features won't be available
                 print(f"Warning: LLM client not available: {e}")
                 self.llm_client = None
+    
+    def _get_questionnaire_path(self, project_id: str) -> Optional[Path]:
+        """
+        Get the path to questionnaire.yaml for a project.
+        
+        Args:
+            project_id: Project identifier
+            
+        Returns:
+            Path to questionnaire.yaml, or None if project not found
+        """
+        repo_path = self.config_loader.get_repo_path(project_id)
+        if not repo_path:
+            return None
+        return Path(repo_path) / ".sanjaya" / "questionnaire.yaml"
+    
+    def ensure_project_questionnaire(self, project_id: str) -> Dict[str, Any]:
+        """
+        Ensure a questionnaire.yaml exists for the project.
+        If missing, create it with sensible defaults derived from template.
+        
+        Args:
+            project_id: Project identifier
+            
+        Returns:
+            dict: Loaded questionnaire dict
+        """
+        q_path = self._get_questionnaire_path(project_id)
+        if not q_path:
+            raise ValueError(f"Project '{project_id}' not found. Cannot create questionnaire.")
+        
+        if not q_path.exists():
+            # Load template
+            template_path = Path("docs/project_questionnaire_template.yaml")
+            if not template_path.exists():
+                # If template doesn't exist, create minimal defaults
+                q_data = {
+                    "project_meta": {
+                        "name": project_id,
+                        "description": f"Project {project_id}"
+                    },
+                    "project_type": {"value": "demo"},
+                    "architecture": {
+                        "ui": {"value": "none"},
+                        "backend": {"value": "fastapi"}
+                    },
+                    "ui_details": {
+                        "framework": {"value": "none"},
+                        "pages": {"value": []}
+                    },
+                    "auth": {
+                        "enabled": {"value": False},
+                        "providers": {"value": []}
+                    },
+                    "data": {
+                        "persistence": {"value": "none"},
+                        "multi_user": {"value": False}
+                    },
+                    "constraints": {
+                        "complexity": {"value": "toy"},
+                        "monitoring": {"value": True},
+                        "tests_required": {"value": True}
+                    }
+                }
+            else:
+                with template_path.open("r", encoding="utf-8") as f:
+                    q_data = yaml.safe_load(f) or {}
+                
+                # Adjust project_meta based on project_id
+                if "project_meta" in q_data:
+                    q_data["project_meta"]["name"] = project_id
+            
+            # Ensure directory exists
+            q_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write questionnaire
+            with q_path.open("w", encoding="utf-8") as f:
+                yaml.safe_dump(q_data, f, sort_keys=False, default_flow_style=False)
+            
+            return q_data
+        
+        # Load existing questionnaire
+        with q_path.open("r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
     
     def _slugify(self, text: str) -> str:
         """
@@ -199,6 +287,30 @@ class ProductAgent:
                 f"Please register the project first or ensure it exists locally."
             )
         
+        # Ensure questionnaire exists and load it
+        questionnaire = self.ensure_project_questionnaire(project_id)
+        intent_flat = self.config_loader._flatten_questionnaire_intent(questionnaire)
+        
+        # Check if intent is locked
+        if intent_flat.get("locked", False):
+            raise ValueError(
+                f"Project '{project_id}' intent is locked. "
+                "ProductAgent cannot suggest changes or re-interpret architecture. "
+                "Unlock the intent in questionnaire.yaml to proceed."
+            )
+        
+        # Check confidence threshold
+        confidence = intent_flat.get("confidence")
+        min_confidence = intent_flat.get("min_confidence_required")
+        if confidence is not None and min_confidence is not None:
+            if confidence < min_confidence:
+                # ProductAgent may ask exactly ONE question if below threshold
+                # For now, we'll raise an error - in future, this could trigger a single clarification
+                raise ValueError(
+                    f"Project '{project_id}' confidence ({confidence}) is below required threshold ({min_confidence}). "
+                    "Please update questionnaire.yaml to increase confidence or lower the threshold."
+                )
+        
         # Load project config for context
         try:
             project_config = self.config_loader.load_project_config(project_id)
@@ -213,15 +325,17 @@ class ProductAgent:
         project_context = context or {}
         project_context.update({
             "project_id": project_id,
-            "project_name": project_config.get("project_name", project_id)
+            "project_name": project_config.get("project_name", project_id),
+            "intent": intent_flat  # Include questionnaire intent
         })
         
-        # Build prompt
+        # Build prompt with intent
         user_prompt = build_feature_design_prompt(
             idea=idea,
             project_context=project_context,
             tech_stack=str(tech_stack),
-            conventions=str(conventions)
+            conventions=str(conventions),
+            intent=intent_flat
         )
         
         # Generate design contract using LLM
@@ -242,6 +356,12 @@ class ProductAgent:
         filename = f"{slug}.md"
         contract_path = f"design-contracts/{filename}"
         
+        # Build Project Intent section from questionnaire
+        intent_section = self._build_intent_section(intent_flat)
+        
+        # Create intent snapshot for immutability
+        intent_snapshot = self._create_intent_snapshot(intent_flat)
+        
         # Add metadata header to design contract
         date_str = datetime.now().strftime("%Y-%m-%d")
         full_design_content = f"""# Feature Design Contract
@@ -253,6 +373,26 @@ class ProductAgent:
 **Author**: Product Agent (LLM-Powered)
 
 **Status**: Draft
+
+---
+
+## Project Intent
+
+{intent_section}
+
+---
+
+## Project Intent Snapshot
+
+This snapshot captures the project intent at the time of contract creation. 
+Changes to questionnaire.yaml will not affect this contract.
+
+```yaml
+project_intent_snapshot:
+{self._format_snapshot_yaml(intent_snapshot)}
+```
+
+**Snapshot Hash**: `{intent_snapshot['hash']}`
 
 ---
 
@@ -268,6 +408,116 @@ class ProductAgent:
             "project_id": project_id,
             "contract_path": contract_path
         }
+    
+    def _create_intent_snapshot(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create an immutable snapshot of project intent for design contracts.
+        
+        Args:
+            intent: Flattened intent dict from questionnaire
+            
+        Returns:
+            dict: Intent snapshot with hash for verification
+        """
+        # Create a clean snapshot (exclude None values and hash itself)
+        snapshot = {
+            k: v for k, v in intent.items() 
+            if v is not None and k != "hash"
+        }
+        
+        # Generate hash for verification
+        snapshot_str = json.dumps(snapshot, sort_keys=True)
+        snapshot_hash = hashlib.sha256(snapshot_str.encode()).hexdigest()[:12]
+        
+        snapshot["hash"] = snapshot_hash
+        return snapshot
+    
+    def _format_snapshot_yaml(self, snapshot: Dict[str, Any]) -> str:
+        """
+        Format intent snapshot as YAML for inclusion in design contract.
+        
+        Args:
+            snapshot: Intent snapshot dict
+            
+        Returns:
+            str: YAML-formatted string (indented)
+        """
+        lines = []
+        for key, value in sorted(snapshot.items()):
+            if key == "hash":
+                continue  # Hash is shown separately
+            if isinstance(value, list):
+                if value:
+                    lines.append(f"  {key}:")
+                    for item in value:
+                        lines.append(f"    - {item}")
+                else:
+                    lines.append(f"  {key}: []")
+            elif isinstance(value, bool):
+                lines.append(f"  {key}: {str(value).lower()}")
+            else:
+                lines.append(f"  {key}: {value}")
+        return "\n".join(lines)
+    
+    def _build_intent_section(self, intent: Dict[str, Any]) -> str:
+        """
+        Build a Project Intent section from flattened intent dict.
+        
+        Args:
+            intent: Flattened intent dict from questionnaire
+            
+        Returns:
+            str: Markdown formatted intent section
+        """
+        if not intent:
+            return "Project intent not specified."
+        
+        lines = []
+        
+        if intent.get("project_type"):
+            lines.append(f"- **Project type**: {intent['project_type']}")
+        
+        if intent.get("ui"):
+            ui_framework = intent.get("ui_framework", "none")
+            if ui_framework != "none":
+                lines.append(f"- **UI**: {intent['ui']} ({ui_framework})")
+            else:
+                lines.append(f"- **UI**: {intent['ui']}")
+        
+        if intent.get("backend"):
+            lines.append(f"- **Backend**: {intent['backend']}")
+        
+        if intent.get("auth_enabled") is not None:
+            auth_status = "enabled" if intent.get("auth_enabled") else "disabled"
+            lines.append(f"- **Auth**: {auth_status}")
+            if intent.get("auth_enabled") and intent.get("auth_providers"):
+                lines.append(f"  - Providers: {', '.join(intent['auth_providers'])}")
+        
+        if intent.get("persistence"):
+            lines.append(f"- **Persistence**: {intent['persistence']}")
+        
+        if intent.get("multi_user") is not None:
+            lines.append(f"- **Multi-user**: {intent['multi_user']}")
+        
+        if intent.get("complexity"):
+            lines.append(f"- **Complexity**: {intent['complexity']}")
+        
+        if intent.get("monitoring") is not None:
+            lines.append(f"- **Monitoring**: {'enabled' if intent['monitoring'] else 'disabled'}")
+        
+        if intent.get("tests_required") is not None:
+            lines.append(f"- **Tests required**: {intent['tests_required']}")
+        
+        if intent.get("out_of_scope"):
+            out_of_scope = intent["out_of_scope"]
+            if out_of_scope:
+                lines.append(f"- **Out of scope**: {', '.join(out_of_scope)}")
+        
+        if intent.get("locked") is not None:
+            locked_status = "locked" if intent["locked"] else "unlocked"
+            lines.append(f"- **Intent locked**: {locked_status}")
+        
+        return "\n".join(lines) if lines else "Project intent not specified."
     
     def clarify_requirements(self, idea: str, context: dict = None):
         """

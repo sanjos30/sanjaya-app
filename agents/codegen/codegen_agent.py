@@ -64,9 +64,12 @@ class CodegenAgent:
         feature_slug = self._slug_from_contract_path(contract_path)
         parsed_contract = self._parse_design_contract(contract_text)
 
-        # Ensure scaffold for known stacks
+        # Extract intent from project config
+        intent = project_config.get("intent", {}) or {}
+
+        # Ensure scaffold for known stacks (respecting intent)
         dirs = self._resolve_dirs(project_config)
-        self._ensure_scaffold(project_config, dirs)
+        self._ensure_scaffold(project_config, dirs, intent)
 
         code_files = self.generate_code(
             parsed_contract,
@@ -111,10 +114,20 @@ class CodegenAgent:
         if not self.llm_client:
             raise ValueError("LLM client is required for code generation. Configure OPENAI/ANTHROPIC keys.")
 
+        # Extract intent for decision-making
+        intent = project_config.get("intent", {}) or {}
+        
         language = str(project_config.get("language", "python")).lower()
         framework = str(project_config.get("framework", "")).lower()
         dirs = self._resolve_dirs(project_config)
         app_dir = dirs["backend_dir"]
+        
+        # Use intent backend if available
+        if intent.get("backend"):
+            backend_stack = intent["backend"]
+            if backend_stack == "fastapi":
+                language = "python"
+                framework = "fastapi"
 
         # Stack-aware filename choices
         if language == "python" and framework == "fastapi":
@@ -254,18 +267,41 @@ class CodegenAgent:
             "tests_dir": tests_dir if os.path.isabs(tests_dir) else os.path.join(root, tests_dir),
         }
 
-    def _ensure_scaffold(self, project_config: Dict[str, Any], dirs: Dict[str, str]):
+    def _ensure_scaffold(self, project_config: Dict[str, Any], dirs: Dict[str, str], intent: Dict[str, Any] = None):
+        """
+        Ensure scaffold exists for the project stack, respecting intent constraints.
+        
+        Args:
+            project_config: Project configuration
+            dirs: Resolved directory paths
+            intent: Project intent from questionnaire (optional)
+        """
+        if intent is None:
+            intent = project_config.get("intent", {}) or {}
+        
         language = str(project_config.get("language", "python")).lower()
         framework = str(project_config.get("framework", "")).lower()
         stack = project_config.get("stack", {})
         backend_stack = stack.get("backend", language) if isinstance(stack, dict) else language
+        
+        # Use intent to determine backend if available
+        if intent.get("backend"):
+            backend_stack = intent["backend"]
 
+        # Scaffold backend if specified
         if backend_stack in ["fastapi", "python"]:
             self._scaffold_fastapi(dirs)
         elif backend_stack in ["nextjs", "next", "node", "javascript", "js"]:
             self._scaffold_next(dirs)
         elif backend_stack == "php":
             self._scaffold_php(dirs)
+        
+        # Scaffold UI only if intent says so
+        if intent.get("ui") == "web":
+            ui_framework = intent.get("ui_framework", "none")
+            if ui_framework == "nextjs":
+                self._scaffold_next(dirs)
+            # Add other UI frameworks as needed
 
     def _write_if_missing(self, rel_path: str, content: str):
         if not self.repo_client.file_exists(rel_path):

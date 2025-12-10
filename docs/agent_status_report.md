@@ -40,7 +40,21 @@
 - Generates all template sections (API, data models, tests, logging, etc.)
 - Stack-aware (reads project config for context)
 
+**Capabilities**:
+- Converts rough ideas to comprehensive specs
+- Generates all template sections (API, data models, tests, logging, etc.)
+- Stack-aware (reads project config for context)
+- **NEW**: Manages project questionnaire (ensures `.sanjaya/questionnaire.yaml` exists)
+- **NEW**: Uses questionnaire intent when generating design contracts
+- **NEW**: Adds "Project Intent" section to design contracts
+
 **Gaps**: None significant
+
+**Project Questionnaire Integration**:
+- ✅ `ensure_project_questionnaire()` - Creates questionnaire from template if missing
+- ✅ Uses questionnaire intent in LLM prompts for design contracts
+- ✅ Adds Project Intent section to generated contracts
+- ✅ Respects intent constraints (no UI if ui=none, no auth if disabled, etc.)
 
 ---
 
@@ -103,6 +117,15 @@
 - Stack-aware generation (FastAPI, Next.js, PHP)
 - Creates deterministic scaffolds when files missing
 - Generates tests alongside code
+- **NEW**: Uses `config["intent"]` from questionnaire for decision-making
+- **NEW**: Only scaffolds UI if `intent["ui"] != "none"`
+- **NEW**: Skips auth scaffolding if `intent["auth_enabled"] == False`
+- **NEW**: Respects backend stack from intent
+
+**Project Questionnaire Integration**:
+- ✅ Reads `config["intent"]` from project config
+- ✅ Uses intent to decide which scaffolds to create
+- ✅ Respects intent constraints (backend, UI, auth, persistence)
 
 **Gaps**:
 - ⚠️ No integration test generation

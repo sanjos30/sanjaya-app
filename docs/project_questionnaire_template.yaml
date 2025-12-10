@@ -1,0 +1,79 @@
+# Project Questionnaire Template
+# High-level, stack-agnostic project intent.
+# This is a template; copy to .sanjaya/questionnaire.yaml per project.
+
+project_meta:
+  name: "lemonade-stand"       # Example; will be overridden per project
+  description: "Lemonade Stand Planner demo app"
+  confidence: 0.85             # Confidence level (0.0-1.0) in project requirements
+  min_confidence_required: 0.75  # Minimum confidence threshold for proceeding
+
+project_type:
+  value: "demo"                # one of: [demo, internal_tool, production]
+  options: ["demo", "internal_tool", "production"]
+  description: "How serious is this project?"
+
+architecture:
+  ui:
+    value: "web"               # [none, web, mobile]
+    options: ["none", "web", "mobile"]
+    description: "Does this project have a UI, and of what kind?"
+
+  backend:
+    value: "fastapi"           # [fastapi, node, none]
+    options: ["fastapi", "node", "none"]
+    description: "Primary backend stack"
+
+ui_details:
+  framework:
+    value: "nextjs"            # [nextjs, react, none]
+    options: ["nextjs", "react", "none"]
+    description: "If ui != none, which framework?"
+
+  pages:
+    value: ["landing", "form"] # list, subset of [landing, dashboard, form]
+    options: ["landing", "dashboard", "form"]
+    description: "Key pages to scaffold"
+
+auth:
+  enabled:
+    value: false
+    description: "Is authentication required?"
+
+  providers:
+    value: []                  # subset of [email_password, oauth_google, none]
+    options: ["email_password", "oauth_google", "none"]
+    description: "Auth providers (ignored if enabled=false)"
+
+data:
+  persistence:
+    value: "none"              # [none, sqlite, postgres]
+    options: ["none", "sqlite", "postgres"]
+    description: "Data persistence choice"
+
+  multi_user:
+    value: false
+    description: "Does the project need multi-user separation?"
+
+constraints:
+  complexity:
+    value: "toy"               # [toy, simple, realistic]
+    options: ["toy", "simple", "realistic"]
+    description: "How close to real-world production should we get?"
+
+  monitoring:
+    value: true
+    description: "Should logs/monitoring be baked in? (for MonitorAgent demos)"
+
+  tests_required:
+    value: true
+    description: "Should Codegen enforce tests for new code?"
+
+  out_of_scope:
+    value: []                 # List of features/domains explicitly out of scope
+    description: "Features that must NOT be designed, scaffolded, or mentioned (e.g., ['payments', 'notifications', 'admin panel'])"
+
+intent:
+  locked: false                # If true, ProductAgent cannot suggest changes, DesignAgent must not re-interpret architecture
+  description: "Locked intent forces strict compliance mode, preventing LLM drift"
+

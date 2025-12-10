@@ -24,7 +24,8 @@ def build_feature_design_prompt(
     idea: str,
     project_context: dict = None,
     tech_stack: str = None,
-    conventions: str = None
+    conventions: str = None,
+    intent: dict = None
 ) -> str:
     """
     Build a prompt for generating a feature design contract.
@@ -34,6 +35,7 @@ def build_feature_design_prompt(
         project_context: Additional project context
         tech_stack: Technology stack information
         conventions: Project conventions and patterns
+        intent: Project intent from questionnaire (flattened)
         
     Returns:
         str: Formatted prompt for LLM
@@ -56,6 +58,69 @@ def build_feature_design_prompt(
         ""
     ]
     
+    # Add project intent constraints
+    if intent:
+        prompt_parts.append("Project Intent Constraints (MUST RESPECT):")
+        
+        # Check if intent is locked
+        if intent.get("locked", False):
+            prompt_parts.append("- **INTENT IS LOCKED**: Do NOT suggest changes to architecture, stack, or constraints.")
+            prompt_parts.append("  Strict compliance mode: follow intent exactly as specified.")
+        
+        if intent.get("ui") == "none":
+            prompt_parts.append("- NO UI/FRONTEND: This is a backend-only project")
+        elif intent.get("ui") == "web":
+            framework = intent.get("ui_framework", "none")
+            if framework != "none":
+                prompt_parts.append(f"- UI Framework: {framework}")
+        
+        if intent.get("backend"):
+            prompt_parts.append(f"- Backend Stack: {intent['backend']}")
+        
+        if not intent.get("auth_enabled"):
+            prompt_parts.append("- Authentication: DISABLED (do not include auth in design)")
+        elif intent.get("auth_enabled"):
+            providers = intent.get("auth_providers", [])
+            if providers:
+                prompt_parts.append(f"- Auth Providers: {', '.join(providers)}")
+        
+        if intent.get("persistence") == "none":
+            prompt_parts.append("- Persistence: NONE (stateless, no database)")
+        elif intent.get("persistence"):
+            prompt_parts.append(f"- Persistence: {intent['persistence']}")
+        
+        if not intent.get("multi_user"):
+            prompt_parts.append("- Multi-user: NO (single-user or demo only)")
+        
+        complexity = intent.get("complexity", "toy")
+        prompt_parts.append(f"- Complexity Level: {complexity}")
+        if complexity == "toy":
+            prompt_parts.append("  (Keep it simple, minimal error handling, basic features)")
+        elif complexity == "simple":
+            prompt_parts.append("  (Moderate error handling, some edge cases)")
+        elif complexity == "realistic":
+            prompt_parts.append("  (Production-ready, comprehensive error handling, edge cases)")
+        
+        if not intent.get("monitoring"):
+            prompt_parts.append("- Monitoring: DISABLED (minimal logging)")
+        
+        if not intent.get("tests_required"):
+            prompt_parts.append("- Tests: NOT REQUIRED (skip test sections)")
+        
+        # Out of scope guardrail
+        out_of_scope = intent.get("out_of_scope", [])
+        if out_of_scope:
+            prompt_parts.append("")
+            prompt_parts.append("**CRITICAL: OUT OF SCOPE FEATURES**")
+            prompt_parts.append("The following features/domains are explicitly OUT OF SCOPE:")
+            for item in out_of_scope:
+                prompt_parts.append(f"- {item}")
+            prompt_parts.append("")
+            prompt_parts.append("DO NOT design, scaffold, or mention these features in any way.")
+            prompt_parts.append("If the feature idea requires any of these, reject it or suggest alternatives.")
+        
+        prompt_parts.append("")
+    
     if tech_stack:
         prompt_parts.append(f"Technology Stack: {tech_stack}")
         prompt_parts.append("")
@@ -67,12 +132,14 @@ def build_feature_design_prompt(
     if project_context:
         prompt_parts.append("Additional Context:")
         for key, value in project_context.items():
-            prompt_parts.append(f"- {key}: {value}")
+            if key != "intent":  # Already handled above
+                prompt_parts.append(f"- {key}: {value}")
         prompt_parts.append("")
     
     prompt_parts.append(
         "Generate the complete design contract in markdown format, "
-        "ready for code generation. Be specific and comprehensive."
+        "ready for code generation. Be specific and comprehensive. "
+        "Respect all project intent constraints listed above."
     )
     
     return "\n".join(prompt_parts)

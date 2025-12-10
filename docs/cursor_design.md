@@ -1,7 +1,7 @@
 # Sanjaya Autopilot — Implementation Design Document
 
 **Last Updated**: December 2024  
-**Version**: v0.5 (Golden Path Implementation + MonitorAgent MVP)
+**Version**: v0.6 (Project Questionnaire System)
 
 This document tracks the current implementation state of the Sanjaya Autopilot platform, including what has been built, how it works, and what remains to be implemented.
 
@@ -11,16 +11,17 @@ This document tracks the current implementation state of the Sanjaya Autopilot p
 
 1. [Project Overview](#project-overview)
 2. [Current Implementation Status](#current-implementation-status)
-3. [API Endpoints](#api-endpoints)
-4. [Agent Implementations](#agent-implementations)
-5. [File Structure & Conventions](#file-structure--conventions)
-6. [Path Handling](#path-handling)
-7. [Data Models](#data-models)
-8. [Workflow Flow](#workflow-flow)
-9. [What's Working](#whats-working)
-10. [What's Stubbed](#whats-stubbed)
-11. [Usage Examples](#usage-examples)
-12. [Golden Path: example-project Reference Implementation](#golden-path-example-project-reference-implementation)
+3. [Project Questionnaire System](#project-questionnaire-system)
+4. [API Endpoints](#api-endpoints)
+5. [Agent Implementations](#agent-implementations)
+6. [File Structure & Conventions](#file-structure--conventions)
+7. [Path Handling](#path-handling)
+8. [Data Models](#data-models)
+9. [Workflow Flow](#workflow-flow)
+10. [What's Working](#whats-working)
+11. [What's Stubbed](#whats-stubbed)
+12. [Usage Examples](#usage-examples)
+13. [Golden Path: example-project Reference Implementation](#golden-path-example-project-reference-implementation)
 
 ---
 
@@ -344,6 +345,207 @@ http://localhost:8000
 
 ---
 
+## Project Questionnaire System
+
+### Overview
+
+The Project Questionnaire is a structured way to capture high-level project intent, making projects like "lemonade-stand" driven by explicit configuration rather than vague names.
+
+**Location**: Each project has a questionnaire at `<project_root>/.sanjaya/questionnaire.yaml`
+
+**Template**: `docs/project_questionnaire_template.yaml` defines the structure and defaults
+
+### Questionnaire Structure
+
+The questionnaire captures:
+
+- **Project Metadata**: Name and description
+- **Project Type**: `demo`, `internal_tool`, or `production`
+- **Architecture**: 
+  - UI type: `none`, `web`, or `mobile`
+  - Backend stack: `fastapi`, `node`, or `none`
+- **UI Details**: 
+  - Framework: `nextjs`, `react`, or `none`
+  - Key pages: list of `["landing", "dashboard", "form"]`
+- **Authentication**: 
+  - Enabled: boolean
+  - Providers: list of `["email_password", "oauth_google", "none"]`
+- **Data**: 
+  - Persistence: `none`, `sqlite`, or `postgres`
+  - Multi-user: boolean
+- **Constraints**: 
+  - Complexity: `toy`, `simple`, or `realistic`
+  - Monitoring: boolean
+  - Tests required: boolean
+  - Out of scope: list of features/domains explicitly forbidden
+- **Intent Lock**: 
+  - Locked: boolean (if true, prevents ProductAgent from suggesting changes)
+- **Confidence**: 
+  - Confidence: float (0.0-1.0) in project requirements
+  - Min confidence required: float (threshold for proceeding)
+
+### Integration with ConfigLoader
+
+**Method**: `load_project_questionnaire(project_id)` loads `.sanjaya/questionnaire.yaml`
+
+**Flattening**: `_flatten_questionnaire_intent()` converts nested structure to flat dict:
+
+```python
+{
+    "project_type": "demo",
+    "ui": "web",
+    "backend": "fastapi",
+    "ui_framework": "nextjs",
+    "ui_pages": ["landing", "form"],
+    "auth_enabled": False,
+    "auth_providers": [],
+    "persistence": "none",
+    "multi_user": False,
+    "complexity": "toy",
+    "monitoring": True,
+    "tests_required": True
+}
+```
+
+**Automatic Attachment**: `load_project_config()` automatically:
+1. Loads questionnaire via `load_project_questionnaire()`
+2. Flattens it via `_flatten_questionnaire_intent()`
+3. Attaches as `config["intent"]`
+
+**Usage**:
+```python
+config = config_loader.load_project_config("example-project")
+intent = config["intent"]  # Flattened questionnaire answers
+```
+
+### Integration with ProductAgent
+
+**Method**: `ensure_project_questionnaire(project_id)`
+- Creates questionnaire from template if missing
+- Sets `project_meta.name` to `project_id`
+- Returns loaded questionnaire dict
+
+**Design Contract Generation**:
+- `create_feature_contract_from_idea()` ensures questionnaire exists
+- **Checks intent lock**: If `locked == True`, raises `ValueError` (prevents contract creation)
+- **Checks confidence**: If `confidence < min_confidence_required`, raises `ValueError`
+- Includes intent in LLM prompts with constraints:
+  - "NO UI/FRONTEND" if `ui == "none"`
+  - "Authentication: DISABLED" if `auth_enabled == False`
+  - Complexity level guidance (toy/simple/realistic)
+  - **Out of scope guardrail**: Explicitly forbids features in `out_of_scope` list
+  - **Locked intent warning**: If locked, tells LLM not to suggest architecture changes
+- Adds "Project Intent" section to generated design contracts
+- **Snapshots intent**: Adds immutable "Project Intent Snapshot" with hash for verification
+
+**Example Project Intent Section**:
+```markdown
+## Project Intent
+
+- **Project type**: demo
+- **UI**: none
+- **Backend**: fastapi
+- **Auth**: disabled
+- **Persistence**: none
+- **Multi-user**: false
+- **Complexity**: toy
+- **Monitoring**: enabled
+- **Tests required**: true
+- **Out of scope**: payments, notifications
+- **Intent locked**: unlocked
+```
+
+**Project Intent Snapshot** (immutable):
+```yaml
+## Project Intent Snapshot
+
+project_intent_snapshot:
+  project_type: demo
+  ui: none
+  backend: fastapi
+  auth_enabled: false
+  persistence: none
+  multi_user: false
+  complexity: toy
+  monitoring: true
+  tests_required: true
+  out_of_scope: []
+
+Snapshot Hash: abc123def456
+```
+
+### Integration with CodegenAgent
+
+**Intent-Aware Scaffolding**:
+- Only scaffolds UI if `intent["ui"] != "none"` and `intent["ui_framework"]` matches
+- Skips auth scaffolding if `intent["auth_enabled"] == False`
+- Uses `intent["backend"]` for backend stack decisions
+- Respects `intent["persistence"]` for database setup
+
+**Usage in `_ensure_scaffold()`**:
+```python
+intent = project_config.get("intent", {}) or {}
+
+# Use intent backend if available
+if intent.get("backend"):
+    backend_stack = intent["backend"]
+
+# Scaffold UI only if intent says so
+if intent.get("ui") == "web":
+    ui_framework = intent.get("ui_framework", "none")
+    if ui_framework == "nextjs":
+        self._scaffold_next(dirs)
+```
+
+### Benefits
+
+1. **Explicit Intent**: Projects declare architecture upfront
+2. **Consistent Decisions**: All agents use the same intent
+3. **No Magic Names**: Behavior driven by questionnaire, not naming conventions
+4. **Future-Proof**: Easy to extend with new fields
+5. **Human-Readable**: YAML format easy to edit manually or via future tools
+
+### Example: example-project Questionnaire
+
+**Location**: `configs/examples/example-project/.sanjaya/questionnaire.yaml`
+
+**Content**:
+```yaml
+project_meta:
+  name: "example-project"
+  description: "Internal golden-path FastAPI demo"
+
+project_type:
+  value: "demo"
+
+architecture:
+  ui:
+    value: "none"
+  backend:
+    value: "fastapi"
+# ... (see full file for complete structure)
+```
+
+**Resulting Intent**:
+```python
+{
+    "project_type": "demo",
+    "ui": "none",
+    "backend": "fastapi",
+    "ui_framework": "none",
+    "auth_enabled": False,
+    "persistence": "none",
+    "multi_user": False,
+    "complexity": "toy",
+    "monitoring": True,
+    "tests_required": True
+}
+```
+
+**See Also**: `docs/project_questionnaire_overview.md` for detailed documentation
+
+---
+
 ## Agent Implementations
 
 ### 1. OrchestratorAgent
@@ -421,7 +623,13 @@ http://localhost:8000
 - Uses system prompts to guide LLM output format
 - Generates production-ready design contracts
 
-**Status**: ✅ Fully Implemented (v0 + LLM-powered)
+**Project Questionnaire Integration**:
+- `ensure_project_questionnaire(project_id)` - Creates questionnaire from template if missing
+- Uses questionnaire intent in LLM prompts for design contracts
+- Adds "Project Intent" section to generated contracts
+- Respects intent constraints (no UI if ui=none, no auth if disabled, etc.)
+
+**Status**: ✅ Fully Implemented (v0 + LLM-powered + Questionnaire)
 
 ---
 
@@ -581,7 +789,14 @@ POST /workflows/run
 - Next.js: Includes `/api/health` route (App Router or Pages Router)
 - PHP: Includes `/health` handler in `public/index.php`
 
-**Status**: ✅ Fully Implemented (LLM-powered + scaffolds)
+**Project Questionnaire Integration**:
+- Reads `config["intent"]` from project config
+- Uses intent to decide which scaffolds to create
+- Only scaffolds UI if `intent["ui"] != "none"`
+- Skips auth scaffolding if `intent["auth_enabled"] == False`
+- Uses `intent["backend"]` for backend stack decisions
+
+**Status**: ✅ Fully Implemented (LLM-powered + scaffolds + intent-aware)
 
 ---
 
@@ -722,9 +937,16 @@ Each project under `configs/examples/{project_id}/` must have:
 ```
 .sanjaya/
 ├── autopilot.yaml              # Project configuration
+├── questionnaire.yaml          # Project intent questionnaire (NEW)
 └── design-contracts/           # Feature design contracts
     └── {slugified-feature-name}.md
 ```
+
+**Questionnaire File**:
+- Location: `.sanjaya/questionnaire.yaml`
+- Template: `docs/project_questionnaire_template.yaml`
+- Auto-created by ProductAgent if missing
+- Exposed as `config["intent"]` by ConfigLoader
 
 ---
 
@@ -1528,9 +1750,52 @@ The example-project can run the complete Sanjaya workflow:
   - MonitorAgent tests
   - Workflow status computation tests
 
+### v0.6: Project Questionnaire System
+- **Questionnaire Template**: `docs/project_questionnaire_template.yaml`
+  - Defines structure and defaults for all questionnaire fields
+  - Captures project type, architecture, UI, auth, data, constraints
+- **Per-Project Questionnaire**: `.sanjaya/questionnaire.yaml`
+  - Stores actual answers for each project
+  - Auto-created by ProductAgent from template if missing
+  - example-project has working questionnaire
+- **ConfigLoader Integration**:
+  - `load_project_questionnaire()` loads questionnaire.yaml
+  - `_flatten_questionnaire_intent()` converts nested structure to flat dict
+  - `load_project_config()` automatically attaches `config["intent"]`
+- **ProductAgent Integration**:
+  - `ensure_project_questionnaire()` creates questionnaire if missing
+  - Uses intent in LLM prompts for design contract generation
+  - Adds "Project Intent" section to generated contracts
+  - Respects intent constraints (no UI if ui=none, no auth if disabled)
+  - **NEW**: Checks `intent.locked` flag (raises error if locked, prevents contract creation)
+  - **NEW**: Checks confidence threshold (raises error if below threshold)
+  - **NEW**: Respects `out_of_scope` guardrail in prompts (explicitly forbids features)
+  - **NEW**: Snapshots intent in design contracts for immutability (with hash)
+- **CodegenAgent Integration**:
+  - Reads `config["intent"]` for scaffolding decisions
+  - Only scaffolds UI if `intent["ui"] != "none"`
+  - Skips auth scaffolding if `intent["auth_enabled"] == False`
+  - Uses `intent["backend"]` for backend stack decisions
+- **High-Leverage Refinements**:
+  - **Intent Lock** (`intent.locked`): Prevents ProductAgent from suggesting architecture changes
+  - **Confidence Enforcement** (`project_meta.confidence`, `min_confidence_required`): Requires minimum confidence before proceeding
+  - **Out of Scope Guardrail** (`constraints.out_of_scope`): Explicitly forbids certain features to prevent scope creep
+  - **Intent Snapshot**: Immutable snapshot in design contracts for reproducibility and diffing
+- **Benefits**:
+  - Explicit project intent (no magic names)
+  - Consistent decisions across all agents
+  - Prevents LLM drift and scope creep
+  - Immutable design contract history
+  - Future-proof and extensible
+  - Human-readable YAML format
+- **Test Suite**: 20 tests total (all passing)
+  - 6 tests for intent flattening (including refinements)
+  - 4 tests for ProductAgent refinements (locked, confidence, snapshot)
+  - All existing tests still pass
+
 ---
 
-**Document Version**: 1.2  
+**Document Version**: 1.3  
 **Last Updated**: December 2024  
 **Maintained By**: Development Team
 

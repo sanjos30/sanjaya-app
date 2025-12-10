@@ -1,0 +1,47 @@
+# Project Questionnaire for example-project
+# This file captures high-level project intent
+
+project_meta:
+  name: "example-project"
+  description: "Internal golden-path FastAPI demo"
+
+project_type:
+  value: "demo"
+
+architecture:
+  ui:
+    value: "none"
+  backend:
+    value: "fastapi"
+
+ui_details:
+  framework:
+    value: "none"
+  pages:
+    value: []
+
+auth:
+  enabled:
+    value: false
+  providers:
+    value: []
+
+data:
+  persistence:
+    value: "none"
+  multi_user:
+    value: false
+
+constraints:
+  complexity:
+    value: "toy"
+  monitoring:
+    value: true
+  tests_required:
+    value: true
+  out_of_scope:
+    value: []
+
+intent:
+  locked: false
+

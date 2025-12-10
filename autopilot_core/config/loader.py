@@ -1,6 +1,7 @@
 import os
 import yaml
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, Optional
 from autopilot_core.config.project_registry import ProjectRegistry
 from autopilot_core.clients.repo_client import RepoClient
@@ -39,12 +40,13 @@ class ConfigLoader:
         Load the .sanjaya/autopilot.yaml file for the given project_id.
         
         First checks project registry for GitHub repo, then falls back to local path.
+        Also loads questionnaire.yaml and attaches it as config["intent"].
         
         Args:
             project_id: Project identifier
             
         Returns:
-            dict: Project configuration
+            dict: Project configuration with "intent" key populated from questionnaire
             
         Raises:
             FileNotFoundError: If config file not found
@@ -54,10 +56,16 @@ class ConfigLoader:
         
         if project_info:
             # Load from GitHub repo
-            return self.load_from_github(project_info["repo_url"], project_id)
+            cfg = self.load_from_github(project_info["repo_url"], project_id)
         else:
             # Fall back to local path (for testing/development)
-            return self.load_from_local(project_id)
+            cfg = self.load_from_local(project_id)
+        
+        # Load questionnaire and attach as intent
+        questionnaire = self.load_project_questionnaire(project_id)
+        cfg["intent"] = self._flatten_questionnaire_intent(questionnaire)
+        
+        return cfg
 
     def load_from_github(self, repo_url: str, project_id: str) -> Dict[str, Any]:
         """
@@ -153,3 +161,86 @@ class ConfigLoader:
             return local_path
         
         return None
+    
+    def load_project_questionnaire(self, project_id: str) -> Dict[str, Any]:
+        """
+        Load .sanjaya/questionnaire.yaml for a project.
+        If missing, return an empty dict.
+        
+        Args:
+            project_id: Project identifier
+            
+        Returns:
+            dict: Questionnaire data, or empty dict if not found
+        """
+        repo_path = self.get_repo_path(project_id)
+        if not repo_path:
+            return {}
+        
+        questionnaire_path = Path(repo_path) / ".sanjaya" / "questionnaire.yaml"
+        if not questionnaire_path.exists():
+            return {}
+        
+        try:
+            with questionnaire_path.open("r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            return {}
+    
+    def _flatten_questionnaire_intent(self, q: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert nested questionnaire structure into a flat, code-friendly intent dict.
+        
+        Example output:
+        {
+          "project_type": "demo",
+          "ui": "web",
+          "backend": "fastapi",
+          "ui_framework": "nextjs",
+          "auth_enabled": False,
+          "persistence": "none",
+          "multi_user": False,
+          "complexity": "toy",
+          "monitoring": True,
+          "tests_required": True,
+        }
+        
+        Args:
+            q: Questionnaire dict (from questionnaire.yaml)
+            
+        Returns:
+            dict: Flattened intent dict
+        """
+        if not q:
+            return {}
+        
+        def val(path, default=None):
+            """Extract value from nested dict path."""
+            cur = q
+            for p in path:
+                if not isinstance(cur, dict) or p not in cur:
+                    return default
+                cur = cur[p]
+            # Leaf nodes have a "value" field
+            if isinstance(cur, dict) and "value" in cur:
+                return cur["value"]
+            return cur
+        
+        return {
+            "project_type": val(["project_type", "value"]),
+            "ui": val(["architecture", "ui", "value"]),
+            "backend": val(["architecture", "backend", "value"]),
+            "ui_framework": val(["ui_details", "framework", "value"]),
+            "ui_pages": val(["ui_details", "pages", "value"], []),
+            "auth_enabled": val(["auth", "enabled", "value"]),
+            "auth_providers": val(["auth", "providers", "value"], []),
+            "persistence": val(["data", "persistence", "value"]),
+            "multi_user": val(["data", "multi_user", "value"]),
+            "complexity": val(["constraints", "complexity", "value"]),
+            "monitoring": val(["constraints", "monitoring", "value"]),
+            "tests_required": val(["constraints", "tests_required", "value"]),
+            "out_of_scope": val(["constraints", "out_of_scope", "value"], []),
+            "locked": val(["intent", "locked"], False),
+            "confidence": val(["project_meta", "confidence"]),
+            "min_confidence_required": val(["project_meta", "min_confidence_required"]),
+        }
