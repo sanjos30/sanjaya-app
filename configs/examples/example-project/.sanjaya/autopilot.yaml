@@ -1,6 +1,17 @@
-# Example autopilot.yaml for example-project
-# This is a stub configuration file
-# See configs/examples/autopilot-example.yaml for a complete example
-
 project_name: "example-project"
 
+codebase:
+  root: "."
+  backend_dir: "backend"
+  tests_dir: "backend/tests"
+
+stack:
+  backend: "fastapi"
+  database: "none"
+
+runtime:
+  backend_fastapi:
+    install_command: "cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt"
+    test_command: "cd backend && . .venv/bin/activate && pytest -q"
+    smoke_command: "cd backend && . .venv/bin/activate && (pkill -f 'uvicorn app.main:app' || true) && sleep 1 && uvicorn app.main:app --host 127.0.0.1 --port 8000 > /dev/null 2>&1 & sleep 4 && curl -f http://127.0.0.1:8000/health && pkill -f 'uvicorn app.main:app'"
+    dev_command: "cd backend && . .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000"

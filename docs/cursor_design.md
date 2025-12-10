@@ -1,7 +1,7 @@
 # Sanjaya Autopilot — Implementation Design Document
 
 **Last Updated**: December 2024  
-**Version**: v0.4 (LLM-Powered ProductAgent)
+**Version**: v0.5 (Golden Path Implementation + MonitorAgent MVP)
 
 This document tracks the current implementation state of the Sanjaya Autopilot platform, including what has been built, how it works, and what remains to be implemented.
 
@@ -20,6 +20,7 @@ This document tracks the current implementation state of the Sanjaya Autopilot p
 9. [What's Working](#whats-working)
 10. [What's Stubbed](#whats-stubbed)
 11. [Usage Examples](#usage-examples)
+12. [Golden Path: example-project Reference Implementation](#golden-path-example-project-reference-implementation)
 
 ---
 
@@ -117,12 +118,18 @@ Sanjaya Autopilot is a **multi-agent, multi-project, stack-agnostic SDLC and ope
    - Configurable via environment variables
    - Chat and generate interfaces
 
+11. **MonitorAgent** (`agents/monitor/monitor_agent.py`) - NEW (MVP)
+    - On-demand log file analysis
+    - Rule-based issue detection (errors, warnings, patterns)
+    - Returns structured issues with severity, code, message, line info
+    - Accessible via `POST /monitor/check` endpoint
+    - **Note**: On-demand only (no background service, no auto-triggers)
+
 ### ⏳ Stubbed / Partial
 
-1. **MonitorAgent** - Log monitoring and issue detection
-2. **MarketingAgent** - Marketing content generation
-3. **Pull Request Creation** - Implemented with GitHub API when token/repo info + push_branch=true; falls back to stub on failure/missing token
-4. **Test Execution** - Basic command execution (pytest/npm test/phpunit) but no stack-aware orchestration beyond that
+1. **MarketingAgent** - Marketing content generation (stub only)
+2. **Pull Request Creation** - Implemented with GitHub API when token/repo info + push_branch=true; falls back to stub on failure/missing token
+3. **Test Execution** - Command-based execution (pytest/npm test/phpunit) with stack-aware orchestration via `autopilot.yaml` runtime commands
 
 ---
 
@@ -329,6 +336,12 @@ http://localhost:8000
 
 **Note**: This is on-demand only. It does NOT automatically trigger workflows. For continuous monitoring, trigger this endpoint externally (cron, GitHub Actions, etc.).
 
+**Detection Patterns**:
+- `ERROR_LINE`: Lines containing "ERROR" (case-insensitive)
+- `WARNING_LINE`: Lines containing "WARNING" (case-insensitive)
+- `TIMEOUT_PATTERN`: Lines containing "timeout" or "timed out"
+- `EXCEPTION_PATTERN`: Lines containing "Exception" or "Traceback"
+
 ---
 
 ## Agent Implementations
@@ -517,6 +530,11 @@ POST /workflows/run
 
 **Status**: ✅ Implemented (rule-based)
 
+**Integration with Workflow Status**:
+- When `create_pr=true`, GovernanceAgent runs automatically
+- If governance fails, workflow status is set to `FAILED_GOVERNANCE`
+- Governance violations are returned in workflow response but do not block PR creation in MVP
+
 ---
 
 ### 5. ConfigLoader
@@ -567,6 +585,40 @@ POST /workflows/run
 
 ---
 
+### 7. MonitorAgent
+
+**Location**: `agents/monitor/monitor_agent.py`
+
+**Responsibilities**:
+- Analyzes log files for issues (on-demand)
+- Rule-based pattern detection
+- Returns structured issue reports
+
+**Key Methods**:
+
+#### `analyze_logs(log_files: List[str], max_lines: int = 2000) -> MonitorResult`
+- Reads log files (up to `max_lines` per file)
+- Detects issues using predefined patterns:
+  - `ERROR_LINE`: Lines containing "ERROR"
+  - `WARNING_LINE`: Lines containing "WARNING"
+  - `TIMEOUT_PATTERN`: Lines containing "timeout" or "timed out"
+  - `EXCEPTION_PATTERN`: Lines containing "Exception" or "Traceback"
+- Returns structured issues with severity, code, message, line info
+
+**Data Models**:
+- `MonitorIssue`: severity, code, message, line, line_number, file_path
+- `MonitorResult`: issues list, summary string
+
+**Integration**:
+- Accessible via `POST /monitor/check` endpoint
+- On-demand only (no background service)
+- Does NOT automatically trigger workflows
+- For continuous monitoring, trigger externally (cron, GitHub Actions, etc.)
+
+**Status**: ✅ Implemented (MVP - rule-based detection)
+
+---
+
 ## File Structure & Conventions
 
 ### Project Structure
@@ -614,9 +666,26 @@ sanjaya-app/                     # Platform repository
 │   ├── global-settings.yaml
 │   ├── autopilot-schema.yaml
 │   └── examples/                # For local testing only
-│       └── example-project/
-│           └── .sanjaya/
-│               └── ...
+│       └── example-project/    # ✅ Golden Path Reference Implementation
+│           ├── .sanjaya/
+│           │   ├── autopilot.yaml
+│           │   └── design-contracts/
+│           │       └── test-feature.md
+│           └── backend/         # ✅ Fully working FastAPI backend
+│               ├── app/
+│               │   ├── __init__.py
+│               │   └── main.py  # FastAPI app with /health and /ping
+│               ├── tests/
+│               │   ├── __init__.py
+│               │   └── test_health.py  # Unit tests (2 tests)
+│               └── requirements.txt
+├── tests/
+│   ├── integration/
+│   │   ├── __init__.py
+│   │   └── test_example_project_golden_path.py  # ✅ Golden path integration tests
+│   ├── test_example_project_workflow.py  # Additional workflow tests
+│   ├── test_monitor_agent.py
+│   └── test_workflows.py
 ├── .cache/                      # Cached cloned repos (NEW)
 │   └── projects/
 │       └── [project_id]/
@@ -845,9 +914,9 @@ class WorkflowType(str, Enum):
 
 ### Current Limitations
 
-- Code generation is stub/LLM-assisted; no project-specific frameworks yet
-- PR creation not implemented
-- Test execution not implemented
+- Code generation is LLM-assisted (requires API keys)
+- PR creation requires GitHub token and repo metadata
+- Test execution is command-based (uses `autopilot.yaml` runtime commands)
 
 ---
 
@@ -883,8 +952,16 @@ class WorkflowType(str, Enum):
    - Validates inputs correctly
    - Runs LLM-driven codegen when `dry_run=false` and `run_codegen=true`
    - Returns generated file paths
-   - Test execution is command-based (per stack defaults)
+   - Test execution is command-based (uses `autopilot.yaml` runtime commands)
+   - Smoke test execution (starts server, hits health endpoint, stops)
    - PR prep: branch/commit + PR stub; real PR if token/repo info + push_branch enabled
+   - Workflow status computation (SUCCESS, FAILED_TESTS, FAILED_SMOKE, FAILED_GOVERNANCE, ERROR)
+
+2. **Test Suite**
+   - 10 tests total (all passing)
+   - Integration tests for example-project golden path
+   - MonitorAgent tests
+   - Workflow status computation tests
 
 ---
 
@@ -896,12 +973,12 @@ class WorkflowType(str, Enum):
 
 ### Workflow Steps (Stubbed)
 
-1. Pull request creation (stub metadata)
-2. Actual workflow orchestration
+1. Pull request creation (requires GitHub token + repo metadata; falls back to stub)
+2. Automated workflow scheduling (no cron/scheduler yet)
 
 ### Endpoints (Stubbed)
 
-1. `GET /projects` - Returns `pass`
+1. None - All documented endpoints are implemented
 
 ---
 
@@ -1167,28 +1244,19 @@ Note: Orchestrator’s current smoke step is simulated (does not start servers y
 
 ### Immediate Priorities
 
-1. Stack scaffolds and manifests
-   - Generate per-stack entrypoints/manifests (FastAPI, Next/Node, PHP) from `autopilot.yaml`
-   - Ensure runnable dev/test commands and dependency files
-
-2. Test/deploy wiring
-   - Stronger stack-aware test orchestration
-   - Add smoke/run hooks (start app, hit health)
-
-3. PR flow hardening
-   - Push + GitHub PR creation with clearer errors/metadata
-
-4. Agents still stubbed
-   - BugfixAgent, MonitorAgent, GovernanceAgent, MarketingAgent
+1. ✅ **Golden Path Complete** - example-project is fully working
+2. **External Repo Integration** - Ready to integrate lemonade-stand or other external repos
+3. **MarketingAgent** - Implement marketing content generation
+4. **PR Flow Hardening** - Improve error handling and metadata for PR creation
 
 ### Future Enhancements
 
-1. GovernanceAgent safety checks
-2. MonitorAgent log analysis
-3. BugfixAgent implementation
-4. MarketingAgent content generation
-5. Enhanced LLM prompts with project-specific context
-6. Multi-step requirement clarification workflow
+1. **Automated Workflow Scheduling** - Cron/scheduler for continuous workflows
+2. **Enhanced MonitorAgent** - Background service, auto-triggers, more detection patterns
+3. **MarketingAgent** - Content generation for features/releases
+4. **Enhanced LLM Prompts** - Project-specific context, better code generation
+5. **Multi-step Requirement Clarification** - Interactive workflow for requirement refinement
+6. **Stack Expansion** - Add more stack scaffolds (Django, Express, Laravel, etc.)
 
 ---
 
@@ -1214,31 +1282,188 @@ curl -X POST "http://localhost:8000/workflows/run" \
 
 ---
 
-## Reference: example-project (FastAPI only)
+## Golden Path: example-project Reference Implementation
 
-- Health: `backend/app/main.py` exposes `GET /health` → `{"status": "ok"}`.
-- Scaffold present: `backend/app/api/routes.py`, `backend/app/core/config.py`, `backend/app/core/db.py`, `backend/requirements.txt`, `backend/tests/test_health.py`.
-- Smoke scripts used: `scripts/smoke_fastapi.sh` (supports `--install-only`).
-- `autopilot.yaml` (`configs/examples/example-project/.sanjaya/autopilot.yaml`) includes:
-  ```
-  codebase:
-    root: "."
-    backend_dir: "backend"
-    tests_dir: "backend/tests"
+**Status**: ✅ **Fully Working Golden Path**
 
-  stack:
-    backend: "fastapi"
-    database: "none"
+The `configs/examples/example-project/` directory is a **complete, working reference implementation** that demonstrates the full Sanjaya workflow end-to-end.
 
-  runtime:
-    backend_fastapi:
-      install_command: "BACKEND_DIR=${BACKEND_DIR:-backend} bash scripts/smoke_fastapi.sh --install-only"
-      smoke_command: "BACKEND_DIR=${BACKEND_DIR:-backend} bash scripts/smoke_fastapi.sh"
-      dev_command: "cd ${BACKEND_DIR:-backend} && . .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000"
-      test_command: "cd ${BACKEND_DIR:-backend} && . .venv/bin/activate && pytest -q"
-  ```
+### Structure
 
-Use this as a pattern for other projects/stacks by adjusting dirs and runtime entries.
+```
+configs/examples/example-project/
+├── .sanjaya/
+│   ├── autopilot.yaml              # ✅ Project configuration
+│   └── design-contracts/
+│       └── test-feature.md         # ✅ Sample design contract
+└── backend/                         # ✅ FastAPI backend
+    ├── app/
+    │   ├── __init__.py
+    │   └── main.py                  # FastAPI app with /health and /ping
+    ├── tests/
+    │   ├── __init__.py
+    │   └── test_health.py            # Unit tests (2 tests: test_health, test_ping)
+    └── requirements.txt              # Dependencies: fastapi, uvicorn, pytest, httpx
+```
+
+### FastAPI Application
+
+**Location**: `backend/app/main.py`
+
+**Endpoints**:
+- `GET /health` → `{"status": "ok"}`
+- `GET /ping` → `{"message": "pong"}`
+
+**Usage**:
+```bash
+cd configs/examples/example-project/backend
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+### Configuration
+
+**Location**: `.sanjaya/autopilot.yaml`
+
+```yaml
+project_name: "example-project"
+
+codebase:
+  root: "."
+  backend_dir: "backend"
+  tests_dir: "backend/tests"
+
+stack:
+  backend: "fastapi"
+  database: "none"
+
+runtime:
+  backend_fastapi:
+    install_command: "cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt"
+    test_command: "cd backend && . .venv/bin/activate && pytest -q"
+    smoke_command: "cd backend && . .venv/bin/activate && (pkill -f 'uvicorn app.main:app' || true) && sleep 1 && uvicorn app.main:app --host 127.0.0.1 --port 8000 > /dev/null 2>&1 & sleep 4 && curl -f http://127.0.0.1:8000/health && pkill -f 'uvicorn app.main:app'"
+    dev_command: "cd backend && . .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+```
+
+**Key Features**:
+- Commands are non-interactive and CI-friendly
+- Smoke command handles port conflicts automatically
+- All commands work from `configs/examples/example-project/` root
+
+### Running Tests
+
+**Unit Tests**:
+```bash
+cd configs/examples/example-project/backend
+. .venv/bin/activate
+pytest -q
+```
+**Expected**: 2 tests pass (test_health, test_ping)
+
+**Integration Tests**:
+```bash
+cd /Volumes/workplace/sanjaya-app
+pytest tests/integration/test_example_project_golden_path.py -v
+```
+**Expected**: 2 tests pass
+- `test_example_project_golden_path_workflow` - Full workflow with tests + smoke
+- `test_example_project_golden_path_with_governance` - Includes governance check
+
+### Golden Path Workflow
+
+The example-project can run the complete Sanjaya workflow:
+
+1. **Dry Run** (Validation):
+   ```bash
+   curl -X POST "http://localhost:8000/workflows/run" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "workflow_type": "feature",
+       "project_id": "example-project",
+       "contract_path": "design-contracts/test-feature.md",
+       "dry_run": true
+     }'
+   ```
+   ✅ Status: `accepted`
+
+2. **Full Workflow with Tests + Smoke**:
+   ```bash
+   curl -X POST "http://localhost:8000/workflows/run" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "workflow_type": "feature",
+       "project_id": "example-project",
+       "contract_path": "design-contracts/test-feature.md",
+       "dry_run": false,
+       "run_codegen": false,
+       "run_tests": true,
+       "run_smoke": true,
+       "create_pr": false
+     }'
+   ```
+   ✅ Expected Response:
+   ```json
+   {
+     "workflow_status": "success",
+     "tests_passed": true,
+     "smoke_passed": true,
+     "governance_ok": null
+   }
+   ```
+
+3. **Bugfix Workflow**:
+   ```bash
+   curl -X POST "http://localhost:8000/workflows/run" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "workflow_type": "bugfix",
+       "project_id": "example-project",
+       "run_tests": true,
+       "run_bugfix": false
+     }'
+   ```
+   ✅ Expected: `workflow_status: "success"` (tests pass)
+
+### Integration Test Details
+
+**Location**: `tests/integration/test_example_project_golden_path.py`
+
+**Test Coverage**:
+- ✅ Full feature workflow with tests + smoke
+- ✅ Governance check integration
+- ✅ Workflow status computation (SUCCESS, FAILED_TESTS, FAILED_SMOKE, FAILED_GOVERNANCE)
+- ✅ All assertions: `tests_passed`, `smoke_passed`, `governance_ok`
+
+**How It Works**:
+1. Ensures example-project uses local path (unregisters if registered)
+2. Instantiates OrchestratorAgent with ProjectRegistry
+3. Runs workflow with all checks enabled
+4. Asserts workflow completes with correct status
+
+### Git Repository
+
+- example-project is initialized as a git repository (required for RepoClient)
+- Initial commit includes backend structure and design contract
+- RepoClient can perform all git operations on this repo
+
+### Use Cases
+
+1. **Template for New Projects**: Copy structure for new projects
+2. **Validation Reference**: Use to test new features and changes
+3. **Demonstration**: Show end-to-end workflow functionality
+4. **Integration Testing**: Validate OrchestratorAgent and workflow status computation
+
+### Notes
+
+- example-project uses **local path resolution** (not registered in ProjectRegistry for testing)
+- Tests unregister example-project if registered to ensure local path usage
+- Git repository required for RepoClient operations
+- All dependencies (gitpython, openai) must be installed for full functionality
+- Smoke command includes port conflict handling (`pkill` before start)
+
+**See Also**: `docs/example_project_golden_path.md` for detailed reference guide.
 
 ---
 
@@ -1279,9 +1504,81 @@ Use this as a pattern for other projects/stacks by adjusting dirs and runtime en
 - **Prompt Templates**: Structured prompts in `agents/product/prompts.py`
 - **Backward Compatible**: Original `create_feature_contract()` still works
 
+### v0.5: Golden Path Implementation + MonitorAgent MVP
+- **example-project Golden Path**: Complete working reference implementation
+  - FastAPI backend with `/health` and `/ping` endpoints
+  - Unit tests (2 tests) that pass
+  - Integration tests (2 tests) for golden path workflow
+  - Working `autopilot.yaml` with runtime commands
+  - Git repository initialized
+- **MonitorAgent MVP**: On-demand log analysis
+  - Rule-based pattern detection (errors, warnings, timeouts, exceptions)
+  - `POST /monitor/check` endpoint
+  - Structured issue reporting
+- **Workflow Status Enhancement**: Detailed status computation
+  - `WorkflowStatus` enum: SUCCESS, FAILED_TESTS, FAILED_SMOKE, FAILED_GOVERNANCE, ERROR
+  - Status gating based on tests, smoke, and governance results
+  - Response includes `workflow_status`, `tests_passed`, `smoke_passed`, `governance_ok`
+- **Bugfix Workflow**: Bugfix-only workflow type
+  - `workflow_type: "bugfix"` skips ProductAgent and CodegenAgent
+  - Runs tests and suggests fixes via BugfixAgent if tests fail
+  - Patches returned in response (not auto-applied, HITL)
+- **Test Suite**: 10 tests total (all passing)
+  - Golden path integration tests
+  - MonitorAgent tests
+  - Workflow status computation tests
+
 ---
 
-**Document Version**: 1.1  
+**Document Version**: 1.2  
 **Last Updated**: December 2024  
 **Maintained By**: Development Team
+
+---
+
+## Quick Reference: Running the Golden Path
+
+### 1. Start API Server
+```bash
+cd /Volumes/workplace/sanjaya-app
+python3 -m uvicorn autopilot_core.main_service.api:app --reload
+```
+
+### 2. Run Golden Path Integration Test
+```bash
+pytest tests/integration/test_example_project_golden_path.py -v
+```
+
+### 3. Run Full Test Suite
+```bash
+pytest tests/ -v
+```
+**Expected**: 10 tests pass
+
+### 4. Test example-project Backend Manually
+```bash
+cd configs/examples/example-project/backend
+. .venv/bin/activate
+pytest -q  # 2 tests pass
+uvicorn app.main:app --reload  # Test /health and /ping endpoints
+```
+
+### 5. Run Workflow via API
+```bash
+curl -X POST "http://localhost:8000/workflows/run" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_type": "feature",
+    "project_id": "example-project",
+    "contract_path": "design-contracts/test-feature.md",
+    "dry_run": false,
+    "run_tests": true,
+    "run_smoke": true
+  }'
+```
+
+**See Also**:
+- `docs/example_project_golden_path.md` - Detailed golden path reference
+- `docs/example_project_final_summary.md` - Implementation summary
+- `docs/agent_status_report.md` - Agent status details
 
